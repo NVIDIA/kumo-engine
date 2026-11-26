@@ -327,7 +327,10 @@ def test_native_sequence_raw_features_use_the_selected_amount_alias(tmp_path, mo
     assert (values["train_raw"][:, :2] > 0).all()
 
 
-def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("finite_training_amount", [False, True])
+def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(
+    tmp_path, monkeypatch, finite_training_amount
+):
     from tfm.data.adapters.native_transactions import _ScalarBook
     from tfm.runtime import native_sequence
 
@@ -341,7 +344,11 @@ def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(tmp_pat
                         f"{partition}-{index}",
                         instant + (index - 2) * 1_000_000,
                         "transaction",
-                        {"amount": index + 1},
+                        {
+                            "amount": index + 1
+                            if finite_training_amount or partition != "train"
+                            else float("nan")
+                        },
                         {},
                         {},
                         None,
@@ -357,6 +364,13 @@ def test_label_free_precomputed_sequence_accepts_equal_partition_cutoffs(tmp_pat
     )
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(config))
+    if not finite_training_amount:
+        from tfm.contracts.errors import SchemaError
+
+        with pytest.raises(SchemaError, match="finite"):
+            run_command("train", config_path=path, run_dir=tmp_path / "run", device="cpu")
+        assert not (tmp_path / "run/model.pt").exists()
+        return
     out = run_command("train", config_path=path, run_dir=tmp_path / "run", device="cpu")
     import pyarrow.parquet as pq
 

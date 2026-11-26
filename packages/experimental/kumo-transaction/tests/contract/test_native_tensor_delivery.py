@@ -804,3 +804,60 @@ def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(tmp_p
             fit_view="first",
             split_views={"train": "first", "validation": "alias" if alias else "first"},
         )
+
+
+@pytest.mark.parametrize("saved_metadata", ["absent", "null", "matching", "view", "identity"])
+def test_task_replay_preserves_and_checks_saved_source_view(tmp_path, saved_metadata):
+    from tfm.config import RelationalTaskConfig
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    source = source_files(tmp_path)
+    requested = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train"],
+                "sample_id": ["one"],
+                "split": ["train"],
+                "cutoff": [START + timedelta(seconds=2)],
+            }
+        ),
+        requested,
+    )
+    kwargs = dict(
+        root="users",
+        history_paths={"events": ("activity",)},
+        max_events=8,
+        batch_size=1,
+        views={"restricted": {"events": SourceRows(before_us=1704067201000000)}},
+        fit_view="restricted",
+        split_views={"train": "restricted"},
+    )
+    saved = tmp_path / "saved.parquet"
+    with NativeInputs(source, anchors=requested, work_dir=tmp_path / "initial", **kwargs) as inputs:
+        inputs.save_anchors(saved)
+        expected = inputs.anchors_sha256
+    rows = pq.read_table(saved).to_pylist()
+    if saved_metadata == "absent":
+        for row in rows:
+            del row["view"], row["view_identity"]
+    elif saved_metadata == "null":
+        rows[0].update(view=None, view_identity=None)
+    elif saved_metadata == "view":
+        kwargs["split_views"] = {"train": "full"}
+    elif saved_metadata == "identity":
+        kwargs["views"] = {"restricted": {"events": SourceRows(before_us=1704067202000000)}}
+    pq.write_table(pa.Table.from_pylist(rows), saved)
+    task = RelationalTaskConfig(
+        root="users", history_paths={"events": ("activity",)}, anchors=str(saved)
+    )
+    if saved_metadata in {"view", "identity"}:
+        with pytest.raises(SchemaError, match="Replay anchor view differs"):
+            NativeInputs(source, task=task, work_dir=tmp_path / "replay", **kwargs)
+    else:
+        with NativeInputs(source, task=task, work_dir=tmp_path / "replay", **kwargs) as replay:
+            assert replay.anchors_sha256 == expected
+            replayed = pq.read_table(replay.original_anchors).to_pylist()[0]
+            assert "view" in replayed and "view_identity" in replayed
+            assert replayed["view"] == "restricted"

@@ -262,9 +262,9 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                         raise SchemaError("Native anchors require nonempty sample_id and split")
                     view = self._view_for_split(split)
                     view_identity = self._view_keys[view]
-                    if (
-                        row.get("view", view) != view
-                        or row.get("view_identity", view_identity) != view_identity
+                    if (row.get("view") is not None and row["view"] != view) or (
+                        row.get("view_identity") is not None
+                        and row["view_identity"] != view_identity
                     ):
                         raise SchemaError(
                             "Replay anchor view differs from the configured split view"

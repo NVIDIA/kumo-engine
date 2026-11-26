@@ -270,6 +270,7 @@ def run_command(
             paths={"events": ("events",)},
             amount_key=config.data.amount_field,
             exclusive_cutoff=config.data.split_protocol != "precomputed",
+            event_partition="train" if config.data.split_protocol == "precomputed" else None,
             observation_seconds=int(parse_duration(config.data.observation_window).total_seconds()),
         )
         task = inputs.task(mode)

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve replay source-view metadata through task anchor generation and reject
+  changed views while retaining legacy replay compatibility. Restrict precomputed
+  sequence amount coverage checks to eligible training-partition events.
+
 - Bind native replay requests to owned snapshots and declared split views.
   Keep label-free replay unlabeled and validate overlap within each view,
   including precomputed partitions with equal cutoffs.

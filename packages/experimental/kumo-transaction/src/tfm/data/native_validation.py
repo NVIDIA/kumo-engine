@@ -21,6 +21,7 @@ def require_training_amount(
     observation_seconds: int | None = None,
     split: str = "train",
     exclusive_cutoff: bool = False,
+    event_partition: str | None = None,
 ) -> None:
     """Require a finite configured amount on an observable training-history path.
 
@@ -68,9 +69,17 @@ def require_training_amount(
             else f"AND n{len(path) - 1}.event_us>=(a.cutoff-{int(observation_seconds)})*1000000"
         )
         upper = f"AND n{len(path) - 1}.event_us < a.cutoff*1000000" if exclusive_cutoff else ""
-        query = f"SELECT 1 FROM anchors a {' '.join(joins)} JOIN numbers v ON v.table_name=? AND v.code={previous} AND v.field=? WHERE a.split=? AND v.value IS NOT NULL {lower} {upper} LIMIT 1"
+        partition_join, partition_where, partition_values = "", "", ()
+        if event_partition is not None:
+            if current != "events":
+                raise SchemaError("Book partition validation requires the events history table")
+            partition_join = f"JOIN event_partitions p ON p.code={previous}"
+            partition_where, partition_values = "AND p.partition=?", (event_partition,)
+        query = f"SELECT 1 FROM anchors a {' '.join(joins)} JOIN numbers v ON v.table_name=? AND v.code={previous} AND v.field=? {partition_join} WHERE a.split=? AND v.value IS NOT NULL {lower} {upper} {partition_where} LIMIT 1"
         if (
-            source.connection.execute(query, (*parameters, current, amount_key, split)).fetchone()
+            source.connection.execute(
+                query, (*parameters, current, amount_key, split, *partition_values)
+            ).fetchone()
             is not None
         ):
             return

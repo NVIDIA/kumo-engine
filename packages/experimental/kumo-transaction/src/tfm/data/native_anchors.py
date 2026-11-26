@@ -139,6 +139,8 @@ def task_anchors(source: NativeSourceFiles, task: RelationalTaskConfig, output: 
             ("sample_id", pa.string()),
             ("cutoff", pa.timestamp("us", tz="UTC")),
             ("split", pa.string()),
+            ("view", pa.string()),
+            ("view_identity", pa.string()),
             ("observation_start", pa.timestamp("us", tz="UTC")),
             ("target", pa.float32()),
             ("label_available_us", pa.int64()),
