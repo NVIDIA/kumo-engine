@@ -999,3 +999,52 @@ def test_native_graph_projection_excludes_unreachable_types(tmp_path, mode, dept
         graph.node_features["disconnected"].resize_(1, 2)
         with pytest.raises(ValueError, match="mutat|changed"):
             batch.assert_validated()
+
+
+@pytest.mark.parametrize("order", [("history", "graph"), ("graph", "history")])
+def test_native_filtered_graph_and_history_views_are_independent_of_preparation_order(
+    tmp_path, order
+):
+    from tfm.data.native_inputs import NativeInputs
+    from tfm.data.native_views import SourceRows
+
+    pytest.importorskip("kumo.pytorch.api")
+    source = source_files(tmp_path)
+    anchors = tmp_path / "requested.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": ["train"],
+                "sample_id": ["train"],
+                "split": ["train"],
+                "cutoff": [START + timedelta(seconds=1)],
+            }
+        ),
+        anchors,
+    )
+    with NativeInputs(
+        source,
+        root="users",
+        history_paths={"activity": ("activity",)},
+        anchors=anchors,
+        work_dir=tmp_path / "work",
+        max_events=8,
+        batch_size=1,
+        depth=2,
+        fanout=10,
+        fit_view="train",
+        views={"train": {"events": SourceRows(before_us=1704067201000000)}},
+    ) as inputs:
+        for mode in (*order, *order):
+            with inputs.batches("train", mode=mode, shuffle=False) as batches:
+                (batch,) = list(batches)
+            if mode == "history":
+                assert batch.event_mask.sum().item() == 1
+            else:
+                batch.assert_validated()
+                assert batch.node_features["events"].shape[0] == 1
+        # Preparing the projected history must not alter the other layout's
+        # saved data or its cutoff behavior when a task is reused.
+        with inputs.batches("train", mode="history", shuffle=False) as batches:
+            (history,) = list(batches)
+        assert history.event_mask.sum().item() == 1

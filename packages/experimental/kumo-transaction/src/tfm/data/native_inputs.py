@@ -125,7 +125,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
             ).hexdigest()
             for name, rules in {"full": {}, **self.views}.items()
         }
-        self._view_sources: dict[str, TableSource] = {}
+        self._view_sources: dict[tuple[str, str], TableSource] = {}
         self.target_level: Literal["entity", "sequence"] = target_level
         self.original, self.paths = source, dict(history_paths)
         self.exclusive_terminal_paths = exclusive_terminal_paths
@@ -446,7 +446,7 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
         assert contract is not None
         if view != "full":
             rules = dict(self.views[view])
-            if self._history_source is not None:
+            if base_name != "graph" and self._history_source is not None:
                 relations = {role.name: role for role in source.relationships}
                 original_roles = {role.name: role for role in self.source.relationships}
                 projected = {
@@ -474,11 +474,13 @@ class NativeInputs(AbstractContextManager["NativeInputs"]):
                     raise UnsupportedCombinationError(
                         "Physical source prefixes with projected profile facts need an explicit projected prefix"
                     )
-            if view not in self._view_sources:
-                self._view_sources[view] = source_view(
-                    source, rules, self.directory / f"view-{view}"
+            layout = "source" if base_name == "graph" else "history"
+            key = (view, layout)
+            if key not in self._view_sources:
+                self._view_sources[key] = source_view(
+                    source, rules, self.directory / f"view-{view}-{layout}"
                 )
-            source = self._view_sources[view]
+            source = self._view_sources[key]
         dataset = self.api.Dataset(
             {
                 table.name: self.api.Parquet(str(source.files[table.name]))

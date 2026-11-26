@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep filtered graph and history source views independent of task preparation
+  order, including optional empty or unowned history streams.
+
 - Match native history truncation to complete typed event identities, including
   punctuation and cross-table ties; bind the ordering policy to checkpoints.
 - Support PyArrow's public streaming CSV reader across dynamic-export stubs.
