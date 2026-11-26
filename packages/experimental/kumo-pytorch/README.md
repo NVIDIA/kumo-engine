@@ -86,12 +86,12 @@ With pip, first choose a compatible PyTorch build from the
 then install the engine. For example, for CPU-only use:
 
 ```bash
-pip install "torch>=2.9,<2.13" --index-url https://download.pytorch.org/whl/cpu
+pip install "torch>=2.7,<3" --index-url https://download.pytorch.org/whl/cpu
 pip install "kumo-engine[pytorch]"
 ```
 
 For CUDA 13.0, use the `https://download.pytorch.org/whl/cu130` index instead.
-A compatible PyTorch already installed satisfies the engine's requirement.
+If the environment already has PyTorch 2.7 or later (Databricks Runtime ML, for example), skip the first step and keep it, along with its torchvision and torchaudio.
 With uv, select the build directly:
 
 ```bash
