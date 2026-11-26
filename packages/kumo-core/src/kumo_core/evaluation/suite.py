@@ -105,6 +105,9 @@ class MetricStore(torch.nn.Module):
         task_type: The type of the task.
         target_encoder: The target encoder used for decoding normalized targets
             back to their original raw values.
+        binary_threshold: The probability above which binary and multilabel
+            predictions count as positive in thresholded metrics. It matches
+            the threshold the published predictions use.
     """
     @classmethod
     def _parse_full_name(
@@ -193,11 +196,13 @@ class MetricStore(torch.nn.Module):
         self,
         task_type: TaskType,
         target_encoder: TargetEncoder | None = None,
+        binary_threshold: float = 0.5,
     ) -> None:
         super().__init__()
 
         self.task_type = task_type
         self.target_encoder = target_encoder
+        self.binary_threshold = binary_threshold
 
         # Add available metric signatures to the store:
         self._metric_types: dict[str, _MetricType] = {}
@@ -218,8 +223,22 @@ class MetricStore(torch.nn.Module):
                 assert target_encoder is not None
                 num_categories = target_encoder.num_categories
 
+            # Binary and multilabel heads emit logits. TorchMetrics would only
+            # apply a sigmoid when some value in a mini-batch falls outside
+            # [0, 1], so pass probabilities and threshold them the way the
+            # published predictions do.
+            pred_transform: Callable | None = None
+            threshold_kwargs: dict[str, Any] = {}
+            if task_type in {
+                    TaskType.BINARY_CLASSIFICATION,
+                    TaskType.MULTILABEL_CLASSIFICATION,
+            }:
+                pred_transform = torch.sigmoid
+                threshold_kwargs = dict(threshold=binary_threshold)
+
             self._metric_types['acc'] = _MetricType(
                 cls=torchmetrics.Accuracy,
+                pred_transform=pred_transform,
                 target_transform=lambda target: target.view(-1)
                 if task_type == TaskType.MULTICLASS_CLASSIFICATION else target,
                 kwargs=dict(
@@ -229,11 +248,13 @@ class MetricStore(torch.nn.Module):
                     ),
                     num_classes=num_categories,
                     num_labels=num_categories,
+                    **threshold_kwargs,
                 ),
             )
 
             self._metric_types['precision'] = _MetricType(
                 cls=torchmetrics.Precision,
+                pred_transform=pred_transform,
                 target_transform=lambda target: target.view(-1)
                 if task_type == TaskType.MULTICLASS_CLASSIFICATION else target,
                 kwargs=dict(
@@ -244,11 +265,13 @@ class MetricStore(torch.nn.Module):
                     num_classes=num_categories,
                     num_labels=num_categories,
                     average=average,
+                    **threshold_kwargs,
                 ),
             )
 
             self._metric_types['recall'] = _MetricType(
                 cls=torchmetrics.Recall,
+                pred_transform=pred_transform,
                 target_transform=lambda target: target.view(-1)
                 if task_type == TaskType.MULTICLASS_CLASSIFICATION else target,
                 kwargs=dict(
@@ -259,11 +282,13 @@ class MetricStore(torch.nn.Module):
                     num_classes=num_categories,
                     num_labels=num_categories,
                     average=average,
+                    **threshold_kwargs,
                 ),
             )
 
             self._metric_types['f1'] = _MetricType(
                 cls=torchmetrics.F1Score,
+                pred_transform=pred_transform,
                 target_transform=lambda target: target.view(-1)
                 if task_type == TaskType.MULTICLASS_CLASSIFICATION else target,
                 kwargs=dict(
@@ -274,6 +299,7 @@ class MetricStore(torch.nn.Module):
                     num_classes=num_categories,
                     num_labels=num_categories,
                     average=average,
+                    **threshold_kwargs,
                 ),
             )
 

@@ -30,6 +30,8 @@ MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
 DAYS_PER_WEEK = 7
 MONTHS_PER_YEAR = 12
+# Rows per metric update when re-scoring calibrated evaluation outputs.
+METRIC_UPDATE_CHUNK_SIZE = 65_536
 
 
 class BaseNodeLightningModule(BaseLightningModule, ABC):
@@ -60,6 +62,7 @@ class BaseNodeLightningModule(BaseLightningModule, ABC):
             lr_scheduler_interval=lr_scheduler_interval,
             max_epochs_for_lr_scheduler=max_epochs_for_lr_scheduler,
             enable_compile=enable_compile,
+            binary_threshold=(loss_kwargs or {}).get('threshold', 0.5),
         )
 
         self.loss = loss_resolver(self.task_type, loss, **(loss_kwargs or {}),
@@ -81,6 +84,15 @@ class BaseNodeLightningModule(BaseLightningModule, ABC):
         step_outputs: list[TrainModuleOutput],
     ) -> TrainModuleOutput:
 
+        ckpt_path = (None if self.is_fitting else
+                     self.trainer.ckpt_path)  # type: ignore
+        calibrate = self.calibrator.is_supported and ckpt_path is not None
+        if calibrate:
+            # Metrics accumulated in `evaluation_step` describe uncalibrated
+            # logits. Discard them so `super()` does not log them, and compute
+            # the metrics of the calibrated outputs we publish below instead.
+            self.metric_store.get_metric_collection(stage).reset()
+
         outputs = super().evaluation_epoch_end(stage, step_outputs)
         if self.is_fitting and not self.explainers:
             return outputs
@@ -97,9 +109,8 @@ class BaseNodeLightningModule(BaseLightningModule, ABC):
                              "evaluation")
         assert isinstance(target, Tensor)
 
-        ckpt_path = self.trainer.ckpt_path  # type: ignore
-        if (not self.is_fitting and self.calibrator.is_supported
-                and ckpt_path is not None):
+        if calibrate:
+            assert ckpt_path is not None
             # TODO(matthias): Refactor code to avoid GPU OOM for evaluation.
             logits = logits.to(device=target.device)
             if not self.calibrator.is_fitted:
@@ -116,6 +127,13 @@ class BaseNodeLightningModule(BaseLightningModule, ABC):
                 with fsutil.open_file(ckpt_path, 'wb') as checkpoint_file:
                     torch.save(ckpt, checkpoint_file)
             logits = self.calibrator(logits)
+
+            if not self.disable_eval_metrics:
+                for chunk in torch.arange(logits.size(0)).split(
+                        METRIC_UPDATE_CHUNK_SIZE):
+                    self.update_metrics(stage, logits[chunk].to(self.device),
+                                        target[chunk].to(self.device))
+                self.compute_metrics(stage)
 
             # Save reliability diagrams to the `version_*/` folder:
             base_dir = str(osp.dirname(osp.dirname(ckpt_path)))

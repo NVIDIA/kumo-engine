@@ -161,6 +161,9 @@ class BaseLightningModule(pl.LightningModule, ABC):
             train the model.
         disable_eval_metrics (bool): Whether to disable metrics during
             evaluation step. (default: :obj:`False`)
+        binary_threshold (float): The probability above which binary and
+            multilabel predictions count as positive in thresholded metrics.
+            (default: :obj:`0.5`)
     """
     #: Optimizer settings for a shallow RHS lookup embedding, which only the
     #: link-prediction subclasses that own such an embedding set. Declared
@@ -181,6 +184,7 @@ class BaseLightningModule(pl.LightningModule, ABC):
         max_epochs_for_lr_scheduler: int = 100,
         disable_eval_metrics: bool = False,
         enable_compile: bool = False,
+        binary_threshold: float = 0.5,
     ) -> None:
         super().__init__()
 
@@ -200,7 +204,8 @@ class BaseLightningModule(pl.LightningModule, ABC):
 
         # Register metric store ###############################################
 
-        self.metric_store = MetricStore(task_type, target_encoder)
+        self.metric_store = MetricStore(task_type, target_encoder,
+                                        binary_threshold=binary_threshold)
 
         # Helper attributes ###################################################
 

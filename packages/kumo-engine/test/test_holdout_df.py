@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import torch
+from kumo_core.modeling.calibration import PlatScaling
 from kumo_core.train.output import EvalOutput
 from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
@@ -70,10 +72,13 @@ def graph(tmp_path_factory):
 QUERY = 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID'
 
 
-def _fit(graph, query, refit_trainval=True, refit_full=False, explain=False):
+def _fit(graph, query, refit_trainval=True, refit_full=False, explain=False,
+         metrics=None):
     graph, snapshot = graph
     pquery = kumo.PredictiveQuery(graph=graph, query=query)
     plan = ModelPlan()
+    if metrics is not None:
+        plan.training_job.metrics = metrics
     plan.training_job.disable_explain = not explain
     plan.training_job.refit_trainval = refit_trainval
     plan.training_job.refit_full = refit_full
@@ -138,6 +143,42 @@ def test_holdout_is_the_published_models(graph, refit_trainval, refit_full,
         assert model is None or trial == result.holdout_path.parent
         reopened = TrainingExplanations.load(explanations.run_root)
         assert reopened.trial_root == explanations.trial_root
+
+
+def _flip_calibration(self, logits, y):
+    # A valid Platt calibrator (weight at its 1e-3 floor) that flips most raw
+    # decisions, so metrics computed from uncalibrated logits cannot match the
+    # calibrated published holdout, whatever this tiny fit learned.
+    bias = -1.0 if (logits > 0).float().mean() >= 0.5 else 1.0
+    with torch.no_grad():
+        self.weight_and_bias.copy_(torch.tensor([[1e-3], [bias]]))
+
+
+@pytest.mark.parametrize('refit_trainval,flip', [
+    (False, False),
+    (False, True),
+    (True, True),
+])
+def test_published_test_metrics_match_the_holdout(graph, monkeypatch,
+                                                  refit_trainval, flip):
+    if flip:
+        monkeypatch.setattr(PlatScaling, '_fit', _flip_calibration)
+    result = _fit(graph, QUERY, refit_trainval,
+                  metrics=['acc', 'precision', 'recall', 'f1', 'auroc'])
+
+    holdout = result.holdout_df()
+    target = holdout['TARGET'].astype(bool).to_numpy()
+    pred = holdout['TARGET_PRED'].astype(bool).to_numpy()
+    assert (pred == (holdout['True_PROB'].to_numpy() > 0.5)).all()
+    tp = int((pred & target).sum())
+    precision = tp / pred.sum() if pred.sum() else 0.0
+    recall = tp / target.sum() if target.sum() else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if tp else 0.0
+    expected = dict(acc=float((pred == target).mean()), precision=precision,
+                    recall=recall, f1=f1)
+    prefix = 'test_refit_' if refit_trainval else 'test_'
+    published = {name: result.metrics[prefix + name] for name in expected}
+    assert published == pytest.approx(expected, abs=1e-6)
 
 
 def test_no_holdout(graph):
