@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
 import io
 import logging
 import os.path as osp
@@ -226,6 +227,31 @@ def test_copy_provider_exception_is_sanitized(caplog, tmp_path):
         assert poison not in rendered
         assert poison not in repr(error.value)
         assert poison not in caplog.text
+
+
+@pytest.mark.parametrize('exhausted', [errno.EMFILE, errno.ENFILE])
+def test_copy_keeps_only_the_errno_of_descriptor_exhaustion(
+        exhausted, tmp_path):
+    copy_poison = 'signed-url-and-temporary-token-must-not-escape'
+    provider_error = RuntimeError(copy_poison)
+    provider_error.__context__ = OSError(exhausted, copy_poison)
+
+    with patch(
+            'io_utils.fsutil.s3_filesystem.download_file',
+            side_effect=provider_error,
+    ):
+        with pytest.raises(RuntimeError, match='^File copy failed$') as error:
+            fsutil.copy_file('s3://customer-bucket/events.parquet',
+                             str(tmp_path / 'downloaded'))
+
+    cause = error.value.__cause__
+    assert type(cause) is OSError
+    assert cause.errno == exhausted
+    assert cause.__cause__ is None and cause.__context__ is None
+    rendered = ''.join(
+        traceback.format_exception(type(error.value), error.value,
+                                   error.value.__traceback__))
+    assert copy_poison not in rendered
 
 
 @pytest.mark.parametrize('failure_stage',
@@ -526,8 +552,8 @@ def test_copy_files_threaded_is_concurrent_and_bounded(monkeypatch) -> None:
     credentials = {'provider': 's3', 'marker': 'customer'}
     with credential_scope(credentials, require_explicit=True):
         fsutil.copy_files_threaded(
-            [(f's3://internal/part-{index}',
-              f's3://customer/part-{index}') for index in range(5)],
+            [(f's3://internal/part-{index}', f's3://customer/part-{index}')
+             for index in range(5)],
             overwrite=True,
             max_workers=2,
         )
@@ -764,12 +790,11 @@ def test_copy_enumerates_full_remote_tree_concurrently(
         osp.join(destination, 'a', 'a1'),
     }
     assert set(copy_calls) == {
-        (f'{source}/root.txt', osp.join(destination, 'root.txt'), True,
-         False),
+        (f'{source}/root.txt', osp.join(destination, 'root.txt'), True, False),
         (f'{dir_a}/a.txt', osp.join(destination, 'a', 'a.txt'), True, False),
         (f'{dir_b}/b.txt', osp.join(destination, 'b', 'b.txt'), True, False),
-        (f'{dir_a_1}/a1.txt', osp.join(destination, 'a', 'a1', 'a1.txt'),
-         True, False),
+        (f'{dir_a_1}/a1.txt', osp.join(destination, 'a', 'a1',
+                                       'a1.txt'), True, False),
     }
 
 

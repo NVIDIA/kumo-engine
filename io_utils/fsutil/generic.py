@@ -20,6 +20,7 @@ from async_utils.sync import blocking_func
 from io_utils.fsutil import api, uri
 from io_utils.fsutil.common import (
     TemporaryDirectory,
+    descriptor_limit_errno,
     fsExceptionHandler,
     is_local,
     should_exclude,
@@ -187,6 +188,7 @@ def copy_file(
 
     source_missing = False
     copy_failed = False
+    exhausted_errno: Optional[int] = None
     try:
         if isinstance(src_uri, uri.UCURI) or isinstance(dst_uri, uri.UCURI):
             # Runtime import UCV
@@ -225,14 +227,18 @@ def copy_file(
             logger.error('File copy cleanup failed (error_type=%s)',
                          type(cleanup_error).__name__)
         copy_failed = True
+        exhausted_errno = descriptor_limit_errno(error)
 
     # Raise outside the provider exception handler so the stable exception has
-    # neither a cause nor a context containing signed URLs, request bodies, or
-    # temporary credentials. Retry and Temporal may safely serialize it.
+    # no cause or context containing signed URLs, request bodies, or temporary
+    # credentials; only a bare errno-bearing OSError is attached as the cause.
+    # Retry and Temporal may safely serialize it.
     if source_missing:
         raise FileNotFoundError('Source file not found') from None
     if copy_failed:
-        raise RuntimeError('File copy failed') from None
+        raise RuntimeError('File copy failed') from (
+            None if exhausted_errno is None else OSError(
+                exhausted_errno, os.strerror(exhausted_errno)))
 
 
 # TODO: fsutil.copy() is not working properly on large data exceeding 1GB.

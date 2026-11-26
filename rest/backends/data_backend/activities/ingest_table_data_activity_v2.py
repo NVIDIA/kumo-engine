@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
+import resource
 from datetime import datetime, timezone
 from typing import NoReturn, Tuple
 
@@ -22,6 +24,7 @@ from temporalio import activity
 
 from common_utils.kumo_timing import kumo_timing
 from io_utils import fsutil, logging
+from io_utils.fsutil.common import descriptor_limit_errno
 from kumo.connector.connector import ExportMetrics
 from kumo.connector.file_connector import FileConnector
 from kumo.data import MaterializationStage
@@ -54,6 +57,7 @@ from statedb.utils.errors import (
     IdentityResolutionUnavailableError,
     IdentityValidationError,
     TableIngestionError,
+    TableIngestionFileDescriptorLimitError,
     TableIngestionOutOfMemoryError,
 )
 from temporalio_commons.error_utils import (
@@ -77,6 +81,7 @@ _SAFE_INGESTION_PUBLIC_ERRORS = (
     ConnectorValidationError,
     IdentityResolutionUnavailableError,
     IdentityValidationError,
+    TableIngestionFileDescriptorLimitError,
     TableIngestionOutOfMemoryError,
 )
 
@@ -135,6 +140,23 @@ def _safe_source_error_message(
     return template.format(**{**vars(error), 'table': name})
 
 
+def _file_descriptor_limit_error(
+    errno_value: int, ) -> TableIngestionFileDescriptorLimitError:
+    """Build the retryable descriptor-exhaustion error from numeric fields only.
+
+    The message names the errno and the current ``RLIMIT_NOFILE`` soft limit --
+    neither is sensitive -- and never the provider exception text, keeping the
+    error safe to propagate through the ingestion sanitizer verbatim.
+    """
+    soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    return TableIngestionFileDescriptorLimitError(message=(
+        'Kumo ran out of open file descriptors while staging a source '
+        f'table (errno {errno_value} {errno.errorcode[errno_value]}; '
+        f'open-file soft limit {soft_limit}). This is a transient '
+        'resource limit, not a problem with your data. Re-run the ingest; '
+        'if it persists, contact Kumo support.'))
+
+
 def _is_non_retryable(error: Exception) -> bool:
     """``is_error_non_retryable`` sees a plain ``Exception`` and calls every
     one of them retryable, so a missing grant would be retried until the
@@ -150,9 +172,16 @@ def _raise_sanitized_table_ingestion_error(
     table: TableDefinition | None = None,
 ) -> NoReturn:
     public_error = extract_public_exception(error)
-    log.error('Table ingestion failed (error_type=%s)', type(error).__name__)
+    errno_value = descriptor_limit_errno(error)
+    log.error(
+        'Table ingestion failed (error_type=%s%s)',
+        type(error).__name__,
+        f' errno={errno_value}' if errno_value is not None else '',
+    )
     if isinstance(public_error, _SAFE_INGESTION_PUBLIC_ERRORS):
         raise public_error from None
+    if errno_value is not None:
+        raise _file_descriptor_limit_error(errno_value) from None
     message = None
     if isinstance(error, SourceError):
         message = _safe_source_error_message(error, table)

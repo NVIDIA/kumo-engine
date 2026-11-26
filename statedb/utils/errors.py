@@ -563,6 +563,23 @@ class TableIngestionOutOfMemoryError(PublicException):
     http_code = 422
 
 
+class TableIngestionFileDescriptorLimitError(PublicException):
+    """The worker ran out of open file descriptors while staging a table.
+
+    Raised when a table-staging failure is caused by an ``OSError`` carrying
+    ``EMFILE`` (process limit) or ``ENFILE`` (system-wide limit) somewhere in
+    its cause chain (kumo#395). Always constructed with a fixed local message
+    that names only the errno and the current ``RLIMIT_NOFILE`` soft limit --
+    never the provider exception or provider payload -- so the table-ingestion
+    sanitizer can propagate it verbatim. Retryable: descriptor exhaustion is a
+    transient resource condition, and ingest retries recover tables that failed
+    only because the process was briefly out of descriptors.
+    """
+
+    non_retryable = False
+    http_code = 503
+
+
 class TableInvalidColumnNameError(PublicException):
     """Raised when table contains an invalid column name."""
 
