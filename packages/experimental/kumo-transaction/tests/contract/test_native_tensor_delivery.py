@@ -435,6 +435,8 @@ def test_native_prefix_views_reuse_training_encodings_and_preserve_boundary_time
 
 
 def test_six_hop_triangle_expands_both_fk_directions_in_one_layer(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     """A non-bipartite frontier needs both physical directions of one FK."""
     from tfm.data.native_inputs import NativeInputs
 
@@ -511,6 +513,8 @@ def test_six_hop_triangle_expands_both_fk_directions_in_one_layer(tmp_path):
 
 
 def test_generated_anchors_preserve_date_key_types_and_utc_date_clocks(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from datetime import date
 
     from tfm.config import RelationalTaskConfig
@@ -559,6 +563,8 @@ def test_generated_anchors_preserve_date_key_types_and_utc_date_clocks(tmp_path)
 
 
 def test_native_source_watermark_includes_equal_cutoff_and_rejects_later(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.data.native_inputs import NativeInputs
 
     source = replace(source_files(tmp_path), observed_through=START + timedelta(seconds=2))
@@ -592,6 +598,8 @@ def test_native_source_watermark_includes_equal_cutoff_and_rejects_later(tmp_pat
 
 
 def test_empty_optional_fit_view_table_retains_namespace_for_heldout_history(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.data.native_inputs import NativeInputs
     from tfm.data.native_views import SourceRows
 
@@ -664,6 +672,8 @@ def test_empty_optional_fit_view_table_retains_namespace_for_heldout_history(tmp
 
 
 def test_integer_amounts_mix_with_histories_without_an_amount_field(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.data.native_inputs import NativeInputs
 
     source = source_files(tmp_path)
@@ -714,6 +724,8 @@ def test_integer_amounts_mix_with_histories_without_an_amount_field(tmp_path):
 
 
 def test_equal_cutoff_requests_retain_their_partition_view_and_stored_identity(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.data.native_inputs import NativeInputs
     from tfm.data.native_views import SourceRows
 
@@ -777,6 +789,8 @@ def test_equal_cutoff_requests_retain_their_partition_view_and_stored_identity(t
 def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(
     tmp_path, alias, selector
 ):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.data.native_inputs import NativeInputs
     from tfm.data.native_views import SourceRows
 
@@ -824,6 +838,8 @@ def test_equal_cutoff_conflicting_families_remain_rejected_within_one_view(
 
 @pytest.mark.parametrize("saved_metadata", ["absent", "null", "matching", "view", "identity"])
 def test_task_replay_preserves_and_checks_saved_source_view(tmp_path, saved_metadata):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from tfm.config import RelationalTaskConfig
     from tfm.data.native_inputs import NativeInputs
     from tfm.data.native_views import SourceRows

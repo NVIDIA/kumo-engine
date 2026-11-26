@@ -274,6 +274,9 @@ def test_source_native_same_width_feature_reorder_rejected_before_weights(tmp_pa
 
 
 def test_native_downstream_reuse_needs_only_its_bundled_encoder_weights(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
+    pytest.importorskip("kumo_core.modeling.gnn.hetero")
     pretrain_path = Path("recipes/relational_inputs/config.encoder_pretrain_smoke.yaml")
     pretrain = run_command(
         "train", config_path=pretrain_path, run_dir=tmp_path / "pretrain", device="cpu"
@@ -292,6 +295,8 @@ def test_native_downstream_reuse_needs_only_its_bundled_encoder_weights(tmp_path
 
 
 def test_native_sequence_raw_features_use_the_selected_amount_alias(tmp_path, monkeypatch):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     from dataclasses import replace
 
     from tfm.data.adapters.registry import table_source as original_source

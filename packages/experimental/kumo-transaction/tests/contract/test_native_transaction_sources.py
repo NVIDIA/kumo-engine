@@ -359,6 +359,8 @@ def test_precomputed_sequence_anchor_ids_include_the_partition(tmp_path):
 
 
 def test_lazy_reference_ties_use_original_event_id_before_history_limit(tmp_path):
+    pytest.importorskip("kumo.pytorch.api")
+    pytest.importorskip("diskgraph")
     import pyarrow as pa
 
     from tfm.data.adapters.native_transactions import _ScalarBook
