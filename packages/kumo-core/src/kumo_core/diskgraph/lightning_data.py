@@ -19,30 +19,35 @@ import threading
 import time
 import warnings
 import weakref
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import queues as mp_queues
 from multiprocessing.reduction import ForkingPickler
-from typing import TYPE_CHECKING, Any
+from typing import Any, Self, cast
 
 import pytorch_lightning as pl
+import torch
 from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from diskgraph.sampling_plan import SamplingPlan
 from torch._utils import ExceptionWrapper
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+from torch_geometric.data import HeteroData
 
+from kumo_core.diskgraph.batch_contract import BatchRequest, SamplingContractError
+from kumo_core.diskgraph.batch_encoder import RuntimeBatchEncoder
+from kumo_core.diskgraph.ray_sampling import RayBackendConfig, RayRuntimeIndex
+from kumo_core.diskgraph.remote_loader import _RemoteIterator
 from kumo_core.diskgraph.runtime_adapter import (
+    FeatureSchema,
     MapperBank,
     engine_int64_to_ns,
     runtime_batch_to_hetero,
 )
+from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.task_dataset import DiskgraphTaskManifest
-
-if TYPE_CHECKING:
-    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -1221,7 +1226,6 @@ class DiskgraphValidRHS:
         single-time path used by ShallowRHS / Hybrid) or a
         ``TrainingStage`` (range over ``stage_time_dict``).
         """
-        import torch
         from kumoapi.train import TrainingStage
 
         if self.valid_rhs_idx_dict is None:
@@ -1321,8 +1325,12 @@ def _allocate_stage_batches(
     return allocations
 
 
-class DiskgraphTaskBatchIterable(IterableDataset):
-    """Torch iterable over ``diskgraph.RuntimeIndex.iter``."""
+class DiskgraphTaskBatchIterable(IterableDataset[RuntimeBatch | HeteroData]):
+    """Yield local native batches or actor-encoded remote graphs.
+
+    Local batches pass through the DataModule tensor collator. Remote iteration
+    owns its async receiver and yields already encoded graphs to that same collator.
+    """
     def __init__(
         self,
         *,
@@ -1348,7 +1356,10 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         stage_num_seeds: Mapping[str, int] | None = None,
         stage_runtime_options: Mapping[str, Mapping[str, Any]] | None = None,
         projections: Mapping[str, list[str]] | None = None,
+        sampling_backend: RayBackendConfig | None = None,
     ) -> None:
+        self.sampling_backend = sampling_backend
+        self._remote_iterator: _RemoteIterator | None = None
         self.manifest_path = manifest_path
         self.stages = (stage, ) if isinstance(stage, str) else tuple(stage)
         self.sampling_plan = sampling_plan
@@ -1423,7 +1434,9 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                     )[0].values())
                 for worker_id in range(self.dataloader_num_workers))
         if self.group_by_timestamp:
-            return self._effective_max_batches()
+            count = self._effective_max_batches()
+            assert count is not None
+            return count
         if self.max_batches is not None:
             return self.max_batches
         # PL calls len() before iteration; manifest stage_counts is the source.
@@ -1536,12 +1549,15 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         """One opened index per worker process, reused for every epoch."""
         cached = self.__dict__.get('_runtime_index_handle')
         if cached is None:
-            from diskgraph import RuntimeIndex
-            cached = RuntimeIndex(
-                self.manifest_path,
-                rnd_seed=self.base_seed,
-                num_threads=self.runtime_options.get('num_threads'),
-            )
+            if self.sampling_backend is not None:
+                cached = RayRuntimeIndex(self.manifest_path, self.sampling_backend)
+            else:
+                from diskgraph import RuntimeIndex
+                cached = RuntimeIndex(
+                    self.manifest_path,
+                    rnd_seed=self.base_seed,
+                    num_threads=self.runtime_options.get('num_threads'),
+                )
             self.__dict__['_runtime_index_handle'] = cached
         return cached
 
@@ -1549,9 +1565,54 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         # Never pickle the handle; workers rebuild their own.
         state = dict(self.__dict__)
         state.pop('_runtime_index_handle', None)
+        state['_remote_iterator'] = None
         return state
 
-    def __iter__(self) -> Iterator[RuntimeBatch]:
+    def __iter__(self) -> Iterator[RuntimeBatch | HeteroData]:
+        """Open local native iteration or completion-order remote graph delivery.
+
+        Returns:
+            Native batches locally; encoded graphs when a remote backend is set.
+
+        Raises:
+            ValueError: If remote iteration starts in a DataLoader subprocess.
+            RuntimeError: If the preceding remote iterator cannot drain.
+        """
+        if self.sampling_backend is None:
+            return cast(Iterator[RuntimeBatch], self._iterate_batches())
+        if get_worker_info() is not None:
+            raise ValueError("Remote sampling requires an in-process DataLoader")
+        self.close()
+        self._remote_iterator = _RemoteIterator(
+            self.iter_requests(), self.sampling_backend
+        )
+        return self._remote_iterator
+
+    def close(self) -> None:
+        """Cancel and drain the active remote epoch before reusing its actors.
+
+        Raises:
+            RuntimeError: If outstanding actor work cannot drain before its deadline.
+        """
+        if self._remote_iterator is not None:
+            self._remote_iterator.close()
+
+    def iter_requests(self) -> Generator[BatchRequest, None, None]:
+        """Yield the local epoch schedule without sampling or encoding work.
+
+        Returns:
+            Requests respecting stage mixing, replay, and rank sharding.
+
+        Raises:
+            ValueError: If no remote backend is attached or called in a subprocess.
+        """
+        if self.sampling_backend is None or get_worker_info() is not None:
+            raise ValueError("Remote requests require an in-process Ray backend")
+        yield from cast(Iterator[BatchRequest], self._iterate_batches(True))
+
+    def _iterate_batches(
+        self, requests_only: bool = False
+    ) -> Iterator[RuntimeBatch | BatchRequest]:
         worker = get_worker_info()
         local_num_workers = worker.num_workers if worker is not None else 1
         local_worker_id = worker.id if worker is not None else 0
@@ -1562,6 +1623,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         base_epoch = int(self.shuffle_state.stream_id)
 
         index = self._runtime_index()
+        open_iterator = index.iter_requests if requests_only else index.iter
         # num_threads belongs to the opened engine, not to iter().
         iter_options = {
             k: v
@@ -1579,7 +1641,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             weights = options.get("weighted_seed_sampling")
             if weights is not None:
                 options["weighted_seed_sampling"] = WeightedSeedSampling(**weights)
-            iterator, num_samples = index.iter(
+            iterator, num_samples = open_iterator(
                 SamplingOptions(
                     stage=stage,
                     sampling_plan=self.sampling_plan,
@@ -1608,7 +1670,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                 ))
 
             schedule = _interleave_stage_batches(local_targets)
-            iterators: dict[str, Iterator[RuntimeBatch]] = {}
+            iterators: dict[str, Iterator[RuntimeBatch | BatchRequest]] = {}
             replays = {stage: 0 for stage in self.stages}
             yielded = {stage: 0 for stage in self.stages}
             for stage in schedule:
@@ -1656,6 +1718,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
 
         if self.group_by_timestamp:
             remaining = self._effective_max_batches()
+            assert remaining is not None
             offset = 0
             replay = 0
             while remaining > 0:
@@ -1688,6 +1751,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             return
 
         effective_max_batches = self._effective_max_batches()
+        assert effective_max_batches is not None
         per_worker_target = (effective_max_batches + num_workers -
                              1) // num_workers
         emitted = 0
@@ -1708,6 +1772,64 @@ class DiskgraphTaskBatchIterable(IterableDataset):
             replay += 1
 
 
+class RemoteDataLoader(DataLoader[HeteroData]):
+    """Run the common batch dataset and collator without trainer subprocesses.
+
+    The dataset owns completion-order prefetch and one request/buffer slot per
+    actor. This loader configures in-process collation, pinning, and cleanup.
+
+    Args:
+        dataset: Shared task iterable with a configured remote sampling backend.
+        collate_fn: Shared collator; encoded graphs pass through unchanged.
+        phase: Lifecycle name used by the DataModule shutdown barrier.
+        pin_memory: Pin CPU tensors using ordinary DataLoader logic.
+
+    Raises:
+        ValueError: If the dataset has no remote sampling backend.
+    """
+
+    def __init__(
+        self,
+        dataset: DiskgraphTaskBatchIterable,
+        *,
+        collate_fn: Callable[[RuntimeBatch | HeteroData], HeteroData] | None = None,
+        phase: str = "train",
+        pin_memory: bool = False,
+    ) -> None:
+        if dataset.sampling_backend is None:
+            raise ValueError("RemoteDataLoader requires a remote sampling backend")
+        self.phase = phase
+        self._batch_dataset = dataset
+        super().__init__(
+            cast(IterableDataset[HeteroData], dataset),
+            batch_size=None,
+            num_workers=0,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+        )
+        self.in_order = False
+
+    def close(self) -> None:
+        """Cancel and drain the dataset's active remote epoch.
+
+        Raises:
+            RuntimeError: If outstanding remote work cannot drain before its deadline.
+        """
+        self._batch_dataset.close()
+
+    def __enter__(self) -> Self:
+        """Return a loader whose requests will be drained on context exit."""
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Close the loader on normal exit or an exception.
+
+        Args:
+            *_exc: Context manager exception information.
+        """
+        self.close()
+
+
 def _exit_when_parent_exits() -> None:
     """Bypass queue finalizers once the inherited parent sentinel closes."""
     parent = mp.parent_process()
@@ -1717,7 +1839,9 @@ def _exit_when_parent_exits() -> None:
     os._exit(0)
 
 
-_python_feeder_error = mp_queues.Queue._on_queue_feeder_error
+_python_feeder_error = (
+    mp_queues.Queue._on_queue_feeder_error  # type: ignore[attr-defined]
+)
 
 
 def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
@@ -1745,7 +1869,9 @@ def _send_feeder_error(queue: Any, error: Exception, item: Any) -> None:
 
 def _init_diskgraph_worker(_worker_id: int) -> None:
     """Start parent-death detection and fail unsendable batches loudly."""
-    mp_queues.Queue._on_queue_feeder_error = _send_feeder_error
+    mp_queues.Queue._on_queue_feeder_error = (  # type: ignore[attr-defined]
+        _send_feeder_error
+    )
     threading.Thread(
         target=_exit_when_parent_exits,
         daemon=True,
@@ -1857,6 +1983,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         bidirectional_output: bool = False,
         use_lhs_node_loader: bool = False,
         weighted_seed_sampling: Mapping[str, float | bool] | None = None,
+        sampling_backend: RayBackendConfig | None = None,
     ) -> None:
         super().__init__()
         self.task_manifest = (DiskgraphTaskManifest.load(manifest)
@@ -1868,6 +1995,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         self.shuffle_train = bool(shuffle_train)
         self.drop_last_train = bool(drop_last_train)
         self.base_seed = int(base_seed)
+        self.sampling_backend = sampling_backend
+        if (sampling_backend is not None
+                and sampling_backend.engine_seed != self.base_seed):
+            raise SamplingContractError(
+                "DataModule seed differs from sampler engine seed")
+        self._remote_loaders: weakref.WeakSet[RemoteDataLoader] = weakref.WeakSet()
         self.max_steps_per_epoch = (int(max_steps_per_epoch) if
                                     max_steps_per_epoch is not None else None)
         self.min_steps_per_epoch = int(min_steps_per_epoch)
@@ -2037,6 +2170,9 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     def shutdown_dataloader_workers(self, phase: str | None = None) -> None:
         """Synchronously close every matching worker pool."""
+        for loader in tuple(self._remote_loaders):
+            if phase is None or loader.phase == phase:
+                loader.close()
         self._worker_pool_registry.shutdown(phase)
 
     @property
@@ -2111,7 +2247,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @staticmethod
     def _array_to_long_tensor(values: Any) -> Any:
-        import torch
         if hasattr(values, "to_pylist"):
             values = values.to_pylist()
         return torch.as_tensor(values, dtype=torch.long)
@@ -2145,7 +2280,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             raise RuntimeError(
                 "DLDM.stage_inputs requires an active explain selection "
                 f"capture for stage={stage!r}")
-        import torch
         input_nodes = (torch.cat(self._explain_capture_input_nodes, dim=0)
                        if self._explain_capture_input_nodes else torch.zeros(
                            0, dtype=torch.long))
@@ -2201,7 +2335,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
     def predict_candidates(self) -> "Any | None":
         """RHS node IDs passing the target filter's candidate-table
         conditions; ``None`` admits all."""
-        import torch
 
         from kumo_core.diskgraph.stores import rhs_catalog
         from kumo_core.errors import TrainingValidationError
@@ -2333,7 +2466,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         target type), which differs from the LHS seed type in real two-tower
         topologies (e.g. User -> Item)."""
         import pyarrow as pa
-        import torch
 
         hetero = self._to_hetero(batch)
         seed_ts = batch.task.seed_timestamps
@@ -2359,11 +2491,16 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         max_eval_steps: int | None = None,
     ) -> DataLoader:
         stages = (stage, ) if isinstance(stage, str) else tuple(stage)
-        loader_num_workers = self.num_workers
+        remote = is_train and self.sampling_backend is not None
+        loader_num_workers = (
+            0 if self.sampling_backend is not None else self.num_workers
+        )
         capture_stage = self._explain_capture_stage
         capture_matches_stage = capture_stage in stages or (
             capture_stage == "pred" and "predict" in stages)
         if capture_stage is not None and capture_matches_stage:
+            if remote:
+                raise ValueError("Explanation capture requires a local native loader")
             loader_num_workers = 0
         num_seeds = self._num_seeds_for_stages(stages)
         # Single-timestamp grouped batches: TRAIN seed loader only, and ONLY
@@ -2541,14 +2678,29 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             stage_batch_targets=stage_batch_targets,
             stage_num_seeds=stage_num_seeds,
             stage_runtime_options=stage_runtime_options,
+            sampling_backend=self.sampling_backend if remote else None,
         )
+        collate_fn = self._to_hetero_train if is_train else self._to_hetero
+        if remote:
+            assert self.sampling_backend is not None
+            if self.sampling_backend.engine_seed != self.base_seed:
+                raise SamplingContractError(
+                    "DataModule seed differs from sampler engine seed")
+            self.shutdown_dataloader_workers("train")
+            loader = RemoteDataLoader(
+                iterable,
+                collate_fn=collate_fn,
+                pin_memory=self.pin_memory,
+            )
+            self._remote_loaders.add(loader)
+            return loader
         loader_kwargs: dict[str, Any] = dict(
             batch_size=None,
             num_workers=loader_num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=(self.persistent_workers
                                 if loader_num_workers > 0 else False),
-            collate_fn=(self._to_hetero_train if is_train else self._to_hetero),
+            collate_fn=collate_fn,
         )
         # Pin fork: py3.14's default (forkserver) pickles the dataset and crashes
         # re-initializing CUDA in a worker; fork inherits via COW and never pickles.
@@ -2707,7 +2859,29 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             return None
         return max_steps
 
-    def _to_hetero_train(self, batch: RuntimeBatch) -> Any:
+    def remote_batch_encoder(self) -> RuntimeBatchEncoder:
+        """Capture fitted Python encoding state for sampler replica configuration.
+
+        Call before starting actors; this value excludes the DataModule itself,
+        local worker pools, and Ray handles. The launcher owns artifact placement.
+
+        Returns:
+            Serializable encoder using the same conversion as local training.
+        """
+        return RuntimeBatchEncoder(
+            train_table_name=self._train_table_name,
+            mapper_bank=self.mapper_bank,
+            feature_schema=cast(FeatureSchema, self._feature_schema),
+            task_type=self._task_type,
+            seed_node_type=self._seed_node_type,
+            pk_col_dict=self.pk_col_dict,
+            time_col_dict=self.time_col_dict,
+            target_encoder=cast(TargetEncoder | None, self._target_encoder),
+            index_np_time_unit=self.index_np_time_unit,
+            bidirectional_output=self.bidirectional_output,
+        )
+
+    def _to_hetero_train(self, batch: RuntimeBatch | HeteroData) -> HeteroData:
         r"""Collate for the TRAIN loader, which does not need ``.pkey``.
 
         Building it is not free: the primary key arrives as an Arrow column
@@ -2722,14 +2896,27 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         """
         return self._to_hetero(batch, attach_pkeys=False)
 
-    def _to_hetero(self, batch: RuntimeBatch, *, attach_pkeys: bool = True) -> Any:
+    def _to_hetero(
+        self, batch: RuntimeBatch | HeteroData, *, attach_pkeys: bool = True
+    ) -> HeteroData:
+        """Encode a local batch or pass an actor-encoded graph through unchanged.
+
+        Args:
+            batch: Local native sample or already encoded remote graph.
+            attach_pkeys: Include local primary keys for evaluation and prediction.
+
+        Returns:
+            The model-ready graph, preserving identity for an encoded input.
+        """
+        if isinstance(batch, HeteroData):
+            return batch
         self._capture_explain_selection_batch(batch)
         hetero, _, _ = runtime_batch_to_hetero(
             batch,
             attach_pkeys=attach_pkeys,
             train_table_name=self._train_table_name,
             mapper_bank=self.mapper_bank,
-            feature_schema=self._feature_schema,
+            feature_schema=cast(FeatureSchema, self._feature_schema),
             task_type=self._task_type,
             seed_node_type=self._seed_node_type,
             pk_col_dict=self.pk_col_dict,
@@ -2841,7 +3028,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         rng = self._stage_time_dict.get(stage)
         if rng is None:
             return None
-        import torch
         _min, _max = rng
         return torch.tensor([int(_max)], dtype=torch.long)
 
@@ -2977,7 +3163,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         directly comparable to the ns ``seed_time`` and ns ``unix_*_offset`` in
         ``RHSTime.get_valid_nodes`` (all-ns RHS validity)."""
         import pandas as pd
-        import torch
 
         from kumo_core.diskgraph.stores import read_node_column
 
@@ -3069,7 +3254,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     def prediction_inputs(self, limit: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Read the first prediction rows without features or model inference."""
-        import torch
 
         batch_size = int(self.eval_loader_kwargs['batch_size'])
         names = {str(entry['name']) for entry in self._load_index_node_types()
