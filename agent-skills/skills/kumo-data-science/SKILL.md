@@ -89,9 +89,9 @@ trainer, and `predict` runs against an explicitly rebuilt graph snapshot (see St
 - Choose the predictive problem, target, horizon, graph, or tuning for the user — refuse and name
   the minimum inputs needed
 - Join, clean, deduplicate, aggregate, create labels, or transform data **as model input**.
-  Diagnostic scalar aggregates during preflight — reported as proposal evidence, never written and
-  never fed to training — are not this; they exist so a key can be checked before it silently
-  discards rows
+  Diagnostic scalar aggregates during preflight or in a notebook's read-only check cell — reported
+  as evidence, never written and never fed to training — are not this; they exist so a key or a
+  link can be checked before it silently discards rows
 - Search for, rank, or curate tables by business relevance
 - Retry or resume jobs, or keep state across sessions. The one execution the agent performs is
   Step 3, and only when the user asks.
@@ -178,16 +178,31 @@ preflight inside it.
 Present the graph proposal — seeds, tables,
 primary keys, time columns, links, `table_mode: all-connected [default]` — each line tagged
 `[supplied]` / `[declared]` / `[inferred]` / `[inferred, unverified]` / `[default]`. A semantic
-view is resolved by `accept/semantic_view.md`, read only for a semantic view. If the user asked for embeddings, say they are included. **Stop and wait for confirmation.**
+view is resolved by `accept/semantic_view.md`, read only for a semantic view. If the user asked for embeddings, say they are included. Every time column carries
+its reason and the table's other timestamp columns; a table with several asks which one is the
+event time (`accept/preflight.md` §4). **Stop and wait for confirmation.**
 User-supplied values take precedence over inferred ones.
 
 **Mandatory column-availability pass.** Before presenting the graph, decide the selected columns
 for every included table and add an `Excluded columns` section to the proposal.
 
-- When a table's `time_column` marks the beginning of a row's validity or an interval, exclude any
-  candidate feature whose value is determined only after that time: the interval's eventual
-  endpoint, its realized duration, or a summary of the completed interval. At the row timestamp
-  those values are future information. Decide by semantic role, never by matching column names.
+- When a table's `time_column` marks the beginning of a row's validity or an interval, the column
+  that marks when the row stops being valid is the table's **end time column**: declare it with
+  `end_time_column=`, never as a feature and never dropped (`accept/preflight.md` §4). Exclude any
+  other candidate feature whose value is determined only after that time: the interval's realized
+  duration, or a summary of the completed interval. At the row timestamp those values are future
+  information. Decide by semantic role, never by matching column names.
+- For a query with a time window, flag every **current-state attribute**: a column on a
+  one-row-per-entity table that describes a state the entity can move in and out of (status,
+  plan, tier, stage, active or closed flag, current balance), when the table has no time column
+  recording when that value took effect and no end-time column. A creation or signup date does not
+  count: it dates the row, not the value. Such a column holds only today's value, so every past
+  anchor in training sees today's state — leakage when the state follows the outcome (a status
+  set by recent activity, for a churn or activity target). Fixed traits (birth year, signup
+  channel) are not flagged. List each under a `Flagged columns` section as
+  `<table>.<column> — current-state attribute, <row count> rows, no history [inferred]` and ask
+  whether its past values exist, for example as a history table with a time column. Flag only:
+  it stays selected unless the user chooses to leave it out or supplies the history.
 - Separate the target column from columns derived from it; both rules apply at once.
   - The target column itself **always stays** in the positional column list. The query references
     it by name, so dropping it fails with a missing column.
@@ -207,6 +222,16 @@ Carry the confirmed exclusion set into code generation: a table with any exclusi
 with an explicit positional column list, because omitting it silently restores every source
 column.
 
+**Column types.** `infer_metadata()` types each column from its name, its physical type and its
+sampled values (`kumoai-reference/references/graph_construction.md` *How a semantic type is
+inferred*), and those rules can contradict what a column means. Add a `Column types` section to
+the proposal with one line for every selected non-key column a rule there matches: the type Kumo
+will give it, the rule behind it, and the type its meaning calls for. Where the two differ, the
+choice is the user's, at this gate; the notebook declares the confirmed type with
+`with_column(...)`. A type confirmed here is a declaration, like a foreign key's `ID` — not a
+change made to silence a data message (`kumoai-reference/references/troubleshooting_signals.md`
+§1a).
+
 **Assert what preflight could not find.** The proposal must state these explicitly rather than
 leaving them unmentioned, because each one changes whether the task is expressible:
 
@@ -217,6 +242,8 @@ leaving them unmentioned, because each one changes whether the task is expressib
   conclude from a failed heuristic that the table must be an event or fact table.
 - a time-ranged target whose referenced table has no usable time column — say so, and say what
   would make the task expressible. A timestamp on another table does not repair the target.
+- two links from one table to the same table — name the pair and ask which direction the user
+  wants (`accept/preflight.md` §6). Proposing both without comment is not a confirmation of both.
 
 | Condition | Transition |
 |---|---|
@@ -235,7 +262,7 @@ generated before the task is confirmed:
 - Entity: one prediction per <table>.<key>
 - Outcome: <positive-label condition> / <interaction>
 - Window: <0 to N days after the prediction anchor> | static
-- Task type: <temporal binary classification | link prediction | ...>
+- Task type: <temporal binary classification | link prediction | ...> — <why: the query's shape, and the target column's type where it decides>
 - Output: predictions written to <destination, verbatim> in the same notebook | notebook only, no predictions written
 - Scoring population (static tasks): rows whose <target> is NULL | all <entity> rows, staged at <DB.SCHEMA.TABLE>
 - Threshold (binary classification, written or local): <the user's value [supplied] | 0.5 [default]>
@@ -312,7 +339,9 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
      describing the one line to add a destination later. That example is markdown text, never a
      code cell: a notebook with no confirmed destination contains no code that writes. Inside
      the markdown, show the code as text (a `text` fence), never as a `python` code block —
-     one that would run is a code cell that writes.
+     one that would run is a code cell that writes. A confirmed population table is not a
+     destination: staging it is the notebook's only write, and its name never implies an
+     output table.
    The predict call is part of the artifact, not a separate job the agent manages. The agent
    still executes nothing (Step 3 is opt-in).
 
@@ -338,7 +367,8 @@ in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetun
 - Report the outcome: the training metrics, or the exception and the cell that raised it
 - **Read what Kumo said about the data first.** A warning or error about the data — duplicate
   primary keys, a foreign key that matched few rows, invalid values read as null, a float or
-  mismatched key, an empty training table — leads the report, with the table, column and count,
+  mismatched key, an empty training table — or a link check line with unmatched rows
+  (`hosts/<host>/runtime.md`, where it has one) leads the report, with the table, column and count,
   and the decision goes to the user: fix the source, change the key or link, or accept the loss.
   A run that finished is not a success until they have decided. Never change the data, a column's
   type or the query to make such a message go away

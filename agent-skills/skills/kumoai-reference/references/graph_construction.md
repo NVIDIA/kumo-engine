@@ -183,6 +183,43 @@ Rules:
 - Both `dtype` and `stype` must be resolved before a table is used in a `PredictiveQuery`;
   `infer_metadata()` resolves whatever is missing.
 
+### How a semantic type is inferred
+
+For a column with no declared type, `infer_metadata()` reads, in order: its role (a primary key
+is `ID`, a time column `timestamp`), its physical type (date, time, boolean and list types decide
+on their own), its **name**, and then its **values**, in a sample of up to 10,000 rows. The first
+that decides wins. The name and value rules below can contradict what a column means; the graph
+gate reports each selected column they match (router Node 1c, *Column types*), and a confirmed
+correction is declared with `with_column`.
+
+- **A name can make a column `ID`.** An integer or string column is typed `ID` by its name alone,
+  before any value is read, when the name ends in `id` (a few words such as `paid` or `fluid`
+  excepted) or contains `_id_`; has `code`, `key`, `hash`, `no`, `class`, `label`, `cate` or
+  `category` as an underscore-separated word at its start, middle or end (`discount_code`,
+  `dept_no`, `fraud_label`); or merely starts or ends with `key` or `code` (`keyword_count`,
+  `barcode`). Float columns are exempt. A measurement, a count or a class label with such a name
+  becomes an identifier: its values stop being magnitudes, and `SUM` or `AVG` over it fails the
+  query (`kumoai-reference/references/troubleshooting_signals.md` §3). Report it as
+  `Kumo: ID (named *_code)` beside the type its meaning calls for. A column that a `SUM` or `AVG`
+  target aggregates is declared `numerical` whenever its name matches — the request already says
+  it is a quantity — including a float column, which the rule exempts today but would not after
+  a change of physical type; say so at the gate.
+- **Few distinct values make a number `categorical`.** Unless its name already decided it, a
+  column with at most 3 distinct sampled values is typed `categorical`, and so is an integer
+  column with at most 4,000 distinct values that are no more than 5% of the sampled rows. A name
+  containing `num`, `number`, `count`, `total`, `sum`, `avg`, `price`, `score`, `ratio` or
+  `value` as a prefix, a suffix or an underscore-separated word is typed `numerical` before the
+  values are read. A count without such a name — visits, items, contacts per row — usually lands
+  in `categorical`: as a `SUM` or `AVG` target the task stays regression but `pquery.validate()`
+  warns (`kumoai-reference/references/troubleshooting_signals.md` §3) and the column's history
+  is encoded as labels; as a static target (`PREDICT <table>.<column>`) the task becomes
+  multiclass classification instead of regression. When the request asks for an amount, a total
+  or a number of something, report `Kumo: categorical (integer, few distinct values)` beside
+  `numerical`, declare `with_column('<col>', stype=Stype.numerical)` in the notebook, and say on
+  the Node 1d *Task type* line that this is what makes the task regression.
+
+Source: shipped package (`kumo_core.stype_inference`, `kumo.engine.table`)
+
 ---
 
 ## Step 4: build the graph
@@ -245,10 +282,14 @@ Assigning time columns:
 - Do **not** designate an administrative last-modified timestamp unless it represents when
   the row became valid for modeling.
 - Tables without a meaningful timeline can legitimately have no time column.
-- `end_time_column` exists as a `Table`/`from_source_table` parameter for rows with a validity
-  interval.
-  > Not verified: its exact semantics under this SDK. Do not describe or rely on its
-  > filtering behavior.
+- Rows with a validity interval (the time column is the start, another column the end) declare
+  the end column with `end_time_column` on `Table.from_source_table(...)`, next to `time_column`:
+  `from_source_table(connector['T'], [...], time_column='START_DATE', end_time_column='END_DATE')`. Verified in the SDK source: the column is typed as a timestamp, it
+  must be among the table's `columns`, and it is left out of the model's feature columns
+  (`kumo_core.encoder_selection.feature_column_names`), so it does not leak. Sampling is
+  end-date-aware only on the entity table (after `FOR EACH`) and on the right-hand table of a link
+  prediction (`troubleshooting_signals.md`); say nothing more about its filtering. It needs no
+  primary key: a keyless event table keeps `primary_key=None` with an end time column set.
 
 Temporal splits: for a temporal predictive query, Kumo splits train/validation/holdout by the
 time column of the target table, and at prediction time accesses only data with timestamps at
@@ -260,10 +301,10 @@ every selected feature in that row. If it marks the start of an interval, a fiel
 determined when that interval later changes or ends — its endpoint, its realized duration, or a
 summary of the completed interval — is future information and must not be used as a feature.
 
-If such an interval endpoint is an ordinary candidate feature, omit it from the positional column
-list. If it is configured as `end_time_column`, keep it selected as structural metadata and do not
-present it as a feature; do not rely on its interval-filtering behaviour unless that behaviour has
-been verified for the deployed bundle.
+The interval's endpoint is configured as `end_time_column`: keep it selected as structural
+metadata, never drop it and never present it as a feature. Its realized duration, or a summary of
+the completed interval, is omitted from the positional column list. Do not rely on the endpoint's
+interval-filtering behaviour beyond what is stated above.
 
 The same applies to the prediction target: keep the target column selected so the query and table
 metadata can reference it, and exclude only the companion columns derived from it.
@@ -273,7 +314,8 @@ Leakage causes to screen for:
 - An event timestamp marks the start of a period while another column summarizes what happened
   by the end of that period.
 - A supposedly static entity column is overwritten over time, so the historical value is not
-  recoverable.
+  recoverable. Flagged at the graph gate (`kumo-data-science/SKILL.md` Node 1c, current-state
+  attributes); the user decides.
 - Training and holdout periods overlap or are ordered incorrectly.
 
 Fix the source timeline or drop the leaking field. Do not compensate with model tuning.
@@ -399,8 +441,9 @@ Source: shipped package (`kumo.engine.table`, `kumo.engine.graph`, `kumoapi.grap
 
 Do not fill these from memory. If the task requires them, say so.
 
-- `end_time_column` semantics under the Kumo Predict SDK (parameter exists; behavior only
-  documented for the separate KumoRFM product line, which is out of scope here).
+- How `end_time_column` filters rows beyond the entity table and a link-prediction right-hand
+  table: declaring it is verified (it is a structural column, not a feature); any further
+  sampling behaviour is not.
 - Whether self-referencing edges (self-loops) are permitted.
 - Excluding the target label column from features at table-definition time: there is no known
   `features=` argument on `Table`. Control feature inclusion via `column_names` / `columns`.

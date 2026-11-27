@@ -139,10 +139,41 @@ agent does not deduplicate or filter. Until the user confirms it, the table is t
 keyless — usable as an edge source, but not as an edge destination and not as the `FOR EACH`
 entity. Confirmation is what lifts that restriction, not the existence of a candidate.
 
+When a key repeats, test whether it is unique together with an **id-like** column that the table
+shares with the tables linking to it — a tenant, organisation, account or region id; never a
+time, amount or other measure, which can make any key look unique:
+`COUNT(DISTINCT <KEY>, <COL>) = COUNT(*)`. If one is, say the key is only unique within `<COL>`
+and suggest a single combined key built upstream; Kumo keys are one column, and the agent never
+builds one. If you cannot run the probe, do not ask the user to run it and do not take a go-ahead
+as its result: the notebook runs it before `graph.snapshot()` and stops when the key repeats
+(`kumoai-reference/references/troubleshooting_signals.md` §1).
+
 ## 4. Time column per table
 
 The first `TIMESTAMP*`, `DATE`, or `DATETIME` column, preferring names ending in `_AT`, `_TS`,
 `_TIME`, `_DATE`, or named `EVENT_TIME` / `TIMESTAMP`. A table with none is static.
+
+The time column decides which rows count as history and which fall into a target window, so the
+pick is never silent. On **every** table's time-column line — even with a single candidate, and
+even when the line came from a host-supplied preflight result — say why it was picked (the only
+timestamp column; named as the row's creation or event time; the first candidate by type and
+name) and list the table's **other** timestamp columns, or say there are none. When a table has
+more than one, ask in the proposal which one marks when the row's fact happened or became known,
+and say how to change it: name the column, and the notebook sets it as `time_column`. Names and
+values cannot settle this; the user does. A column not chosen is still placed in time by §5.
+
+**An interval table declares its end column.** When a table's rows are valid over a period — its
+time column is the start (`START_DATE`, `EFFECTIVE_START_TS`) and another date or timestamp column
+marks when the row stops being valid (`END_DATE`, `EFFECTIVE_END_TS`) — name that column as the
+table's **end time column**; do not drop it and do not leave it as an ordinary feature. Kumo keeps
+an end time column out of the model's features, so it carries no future information, and the table
+still records the period. Say so on the table's time-column line (`time column START_DATE, end
+column END_DATE [inferred]`), and let the notebook set it (`end_time_column=`,
+`kumoai-reference/references/graph_construction.md`). A column that is the table's only
+timestamp, or that marks an event rather than the end of a validity period, is not an end time
+column. An end time column is not listed under `Excluded columns`, and it does not change the
+table's primary key: a keyless table with an end time column stays keyless unless the confirmed
+graph names a key, and the notebook sets `primary_key=` only to the confirmed key.
 
 For every time-ranged target aggregation, the table it references must have a usable
 `time_column`. If it does not, say so in the proposal and say what would make the task
@@ -159,9 +190,10 @@ timestamps and must not be treated as one.
 For each table, place every candidate feature in time relative to that table's proposed
 `time_column`, then exclude the ones that are not yet knowable at it.
 
-- When the time column marks the beginning of a validity period or interval, exclude a feature
-  whose value is only determined once that interval later changes or ends: its eventual endpoint,
-  its realized duration, or any summary of the completed interval.
+- When the time column marks the beginning of a validity period or interval, the interval's end
+  column is declared as the end time column (§4), not excluded. Exclude a feature whose value is
+  only determined once that interval later changes or ends: its realized duration, or any summary
+  of the completed interval.
 - Exclude a feature computed from, or containing, the confirmed prediction target.
 - Apply the active host adapter's runtime column constraints.
 
@@ -175,6 +207,43 @@ A link is proposed when a column in table A has the **same name** as the primary
 (`FRAUD_EVENTS.CUSTOMER_ID → CUSTOMERS.CUSTOMER_ID`). Foreign-key constraints, if declared, are
 taken as well, where the source declares any. Nothing else is inferred — no fuzzy matching,
 no value overlap checks, no joins executed.
+
+**A link out of an event table must repeat.** For every link whose source is an event table (it
+has a time column and its rows are occurrences), probe the foreign key with the §3 count:
+`N_DISTINCT = N_NON_NULL` means no parent has more than one event, so no entity has a history to
+learn from — typically a per-event id where the stable entity id belongs. List it under
+`Not found` with the counts and whether the link was inferred or supplied, and ask for the stable
+id. A one-to-one link between two entity tables is normal and needs no probe. If the probe cannot
+run here, the notebook runs it before the snapshot and stops when it fails
+(`kumoai-reference/references/troubleshooting_signals.md` §2); a user's go-ahead is not a probe
+result.
+Each link line names its basis: `declared`, `same name`, or `[supplied]` for a link the user
+named. A column whose name only resembles another table's key — a prefix or suffix added, a
+synonym, an abbreviation (`buyer_id` or `xuser_id` beside `user_id`, `sku` beside `product_id`) —
+is never linked on that resemblance: list it under `Not found` as a possible link, say which key it
+might reference, and let the user name it. Once named, it is `[supplied]`, and the user's
+confirmation is the only basis it has.
+
+Value overlap never creates a link, but it is how every link is checked. For each link the graph
+uses, report the share of its non-null values found in the parent key, so a wrong link stands out:
+measured here when you can read rows (a scalar count, as for keys), otherwise by the notebook's link
+check before training (`hosts/<host>/runtime.md`), and shown on the link line as `coverage: not
+measured yet` until then. When it is measured, every link's share goes to the user; a low one means
+the link, or the parent table, is wrong.
+
+**Two links from one table to the same table** — both ends of a connection, a follow, a referral,
+a transfer — are a decision for the user, not two ordinary links. Kumo accepts both, but a query
+that aggregates across that table to the shared parent fails query validation with
+`Ambiguous link between tables` (the foreign key is not unique). Report the pair in the proposal,
+under `Not found`, and ask which the user wants:
+1. **One direction** — keep one link: the graph gets a single `Edge` for the column they name, and
+   the other column is left out of the table's columns.
+2. **Both, directed** — keep both links; fine as long as no query aggregates across that table to
+   the shared parent.
+3. **Undirected** — the user writes each row twice upstream, the second copy with the two columns
+   swapped, and the graph keeps one link.
+
+Propose, never apply: the notebook does not copy, swap or drop rows.
 
 ## 7. Seeds and table mode
 
@@ -205,16 +274,23 @@ Table mode: all-connected [default] — 7 of 7 tables reachable from the seeds
 Metadata
 - customers: primary key CUSTOMER_ID [inferred]
 - fraud_events: primary key EVENT_ID [inferred]
-- fraud_events: time column EVENT_AT [inferred]
+- fraud_events: time column EVENT_AT [inferred] — named as the event time; other timestamp
+  columns: RESOLVED_AT. Which one marks when the event happened? Name another to use it instead
+- customer_plans: time column VALID_FROM [inferred], end column VALID_TO [inferred] — a validity
+  period; VALID_TO is set as the end time column, not a feature
 - ...
 
 Links
-- fraud_events.CUSTOMER_ID -> customers.CUSTOMER_ID [inferred]
+- fraud_events.CUSTOMER_ID -> customers.CUSTOMER_ID [inferred] — same name; coverage: 99.6% of non-null values found
 - ...
 
 Excluded columns
 - fraud_events.RESOLVED_AT [inferred] — not knowable at the row's EVENT_AT
 - fraud_events.DAYS_TO_RESOLVE [inferred] — duration of an interval that has not ended yet
+- ...
+
+Column types
+- <table>.<column> [inferred] — Kumo: <stype> (<rule>); its meaning: <stype> — <the user's choice>
 - ...
 
 Not found
@@ -225,14 +301,15 @@ Not found
 Confirm, or correct any line (your values take precedence).
 ```
 
-`Excluded columns` and `Not found` are local availability-gate extensions to the confirmation
-format.
+`Excluded columns`, `Column types` and `Not found` are local availability-gate extensions to the
+confirmation format. `Column types` follows router Node 1c, *Column types*.
 
 ## 9. Never
 
 - Prepare, transform, aggregate or materialize **model inputs** — joining, cleaning,
   deduplicating, creating labels. A diagnostic scalar aggregate over source rows is permitted
-  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key. Its
+  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key,
+  and the matched share of a proposed link (§6). Its
   result is reported and then discarded; it is never written anywhere and never reaches training.
 - Rank tables by relevance or drop tables the user did not ask to drop.
 - Proceed to PQL before the proposal is confirmed.

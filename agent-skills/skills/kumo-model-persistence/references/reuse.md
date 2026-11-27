@@ -44,6 +44,12 @@ For an explicitly retained complete local bundle, use this alternative:
 loaded = kumo.Trainer.load(RETAINED_BUNDLE_DIRECTORY)
 ```
 
+`RETAINED_BUNDLE_DIRECTORY` is the directory that directly holds `training-spec.json`, as the
+host's file listing shows it: for a copy laid out as `<bundle>/model/training-spec.json` next to
+`<bundle>/metadata.json`, that is `<bundle>/model`, not `<bundle>`. A record kept beside the bundle
+(its query, tables, columns, keys and edges) is read when the notebook is written, and the
+notebook carries those values as literals, so the rebuilt graph can be reviewed before it runs.
+
 Load only trusted publications. The loader checks bundle integrity and training metadata;
 hashes detect corruption, not publisher trust. Missing `training-spec.json`, incompatible
 spec versions or failed integrity checks are actionable restore errors. Retrieve the complete
