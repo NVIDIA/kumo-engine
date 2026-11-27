@@ -1260,7 +1260,7 @@ class Trainer:
             if mlops is not None:
                 raise ValueError(
                     'Configure cluster storage through '
-                    'kumo.init(artifact_root=...)')
+                    'kumo.settings.configure(artifact_root=...)')
             self.prepare_artifacts(train_table, snapshot=snapshot)
             raise NotImplementedError(
                 'Remote artifacts are ready in trainer.prepared_artifacts; '

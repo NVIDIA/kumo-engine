@@ -797,9 +797,10 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 
 ### 11.2 Hosted Kumo — out of scope entirely
 
-Local `kumo.init(scratch_dir=..., cluster_config=..., artifact_root=...)` is a
-separate Engine API. Local execution needs no initialization; `kumo.configure`
-remains available for scratch placement. Compute clusters currently prepare
+Local `kumo.settings.configure(scratch_dir=..., cluster_config=..., artifact_root=...)`
+is separate from hosted initialization. `kumo.engine.configure` delegates to it
+for compatibility. Omit `cluster_config` to preserve the pool; pass None to release
+it. Local execution needs no initialization. Compute clusters currently prepare
 artifacts only; remote training is not implemented.
 
 - Hosted `kumo.init(url=..., api_key=...)` or initialization with

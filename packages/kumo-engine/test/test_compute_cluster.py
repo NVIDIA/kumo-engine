@@ -5,7 +5,9 @@
 
 import hashlib
 import json
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Lock
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -26,8 +28,7 @@ def _worker(tmp_path: Path) -> _ComputeWorker:
     worker.root = tmp_path / "worker"
     worker.root.mkdir()
     worker.node_id = "worker-node"
-    worker.received = {}
-    worker._stores = {}
+    worker._downloads = {}
     worker.snapshots = {}
     worker.tables = {}
     worker._staged = {}
@@ -177,11 +178,10 @@ def test_receive_verifies_before_commit_and_relocates_metadata(
     with pytest.raises(RuntimeError, match="incomplete"):
         worker.commit("publication", "graph", bundle)
     worker.receive("publication", "graph", str(source), entry)
-    assert "publication" in worker.received
+    assert "publication" in worker._downloads
     replica = worker.commit("publication", "graph", bundle)
     assert replica.publication == "publication"
-    assert "publication" not in worker.received
-    assert "publication" not in worker._stores
+    assert "publication" not in worker._downloads
     assert json.loads((worker.root / "graph/metadata.json").read_bytes()) == {
         "path": str(worker.root / "graph/index.bin")
     }
@@ -195,9 +195,10 @@ def test_receive_rejects_corruption_without_publishing(tmp_path: Path) -> None:
     source.mkdir()
     (source / "index.bin").write_bytes(b"bad")
     entry = ArtifactFile("index.bin", 3, hashlib.sha256(b"yes").hexdigest())
+    worker.receive("bad", "graph", str(source), entry)
     with pytest.raises(ValueError, match="checksum"):
-        worker.receive("bad", "graph", str(source), entry)
-    assert not worker.received
+        worker.commit("bad", "graph", ArtifactBundle("/producer", (entry,)))
+    assert not worker._downloads
     assert not (worker.root / "graph/index.bin").exists()
     assert list((worker.root / "graph").glob("*.partial"))
 
@@ -328,6 +329,7 @@ def test_native_artifacts_are_produced_once_and_replicated(
         begin=SimpleNamespace(remote=replica.begin),
         receive=SimpleNamespace(remote=replica.receive),
         commit=SimpleNamespace(remote=replica.commit),
+        abort=SimpleNamespace(remote=replica.abort),
     )
     monkeypatch.setattr(ray, "get", lambda value: value)
     with scoped_scratch_dir(producer.root):
@@ -587,14 +589,16 @@ def test_publication_failure_never_writes_commit_marker(
     source = worker.root / "task"
     source.mkdir()
     (source / "data.bin").write_bytes(b"data")
-    peer = SimpleNamespace(begin=Mock(), receive=Mock())
+    peer = SimpleNamespace(begin=Mock(), receive=Mock(), abort=Mock())
     peer.receive.remote = Mock(return_value="failed-download")
     monkeypatch.setattr(
-        ray, "get", Mock(side_effect=[None, OSError("download failed")])
+        ray, "get", Mock(side_effect=[None, OSError("download failed"), None])
     )
     settings = kumo.MLOps(str(tmp_path / "store"))
-    with pytest.raises(OSError, match="download failed"):
-        transfer = _Replicator([peer], "", "publication", settings)
+    with (
+        pytest.raises(OSError, match="download failed"),
+        _Replicator([peer], "", "publication", settings) as transfer,
+    ):
         from kumo.engine._training_table_io import store_prepared
 
         store_prepared(
@@ -604,6 +608,7 @@ def test_publication_failure_never_writes_commit_marker(
             transfer.uploaded,
             lambda: transfer.finish(worker.root),
         )
+    peer.abort.remote.assert_called_once_with("publication")
     assert not list((tmp_path / "store").rglob("manifest.json"))
 
 
@@ -733,8 +738,227 @@ def test_snapshot_uses_global_cluster(
     cluster._graph_snapshot.assert_called_once_with(
         graph, {"timestamp_precision": "seconds", "record_sources": False}
     )
-    with pytest.raises(ValueError, match="kumo.init"):
+    with pytest.raises(ValueError, match="kumo.settings.configure"):
         graph.snapshot(mlops=Mock())
     with pytest.raises(ValueError, match="callbacks"):
         graph.snapshot(callbacks=[Mock()])
     assert build_local.call_count == 1
+
+
+def test_downloads_overlap_with_a_bounded_pool_and_commit_barrier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Notifications stay nonblocking while a bounded pool downloads multiple files."""
+    worker = _worker(tmp_path)
+    monkeypatch.setattr("kumo.engine.cluster.download_workers", lambda: 2)
+    saturated, release = Event(), Event()
+    lock = Lock()
+    active = peak = completed = 0
+
+    def download(
+        settings: kumo.MLOps, directory: str, entry: ArtifactFile, root: Path
+    ) -> None:
+        nonlocal active, peak, completed
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                saturated.set()
+        if not release.wait(timeout=10):
+            raise TimeoutError("Test did not release the blocked downloads")
+        with lock:
+            active -= 1
+            completed += 1
+
+    def relocate(bundle: ArtifactBundle, root: Path, *, destination_root: Path) -> None:
+        assert completed == len(bundle.files)
+
+    monkeypatch.setattr(worker, "_download", download)
+    relocation = Mock(side_effect=relocate)
+    monkeypatch.setattr("kumo.engine.cluster.relocate_artifacts", relocation)
+    worker.begin("publication", kumo.MLOps(str(tmp_path / "store")))
+    entries = tuple(ArtifactFile(f"file-{index}", 0, "") for index in range(3))
+    try:
+        for entry in entries:
+            worker.receive("publication", "graph", "objects", entry)
+        assert saturated.wait(timeout=10)
+        with ThreadPoolExecutor(max_workers=1) as barrier:
+            ready = barrier.submit(
+                worker.commit,
+                "publication",
+                "graph",
+                ArtifactBundle("/producer", entries),
+            )
+            try:
+                assert not ready.done()
+                relocation.assert_not_called()
+            finally:
+                release.set()
+            assert ready.result(timeout=10).publication == "publication"
+        assert peak == 2
+        assert not worker._downloads
+        relocation.assert_called_once()
+    finally:
+        release.set()
+        worker.abort("publication")
+
+
+def test_failed_download_drains_the_pool_without_relocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed file reaches commit as an error after all pool work has stopped."""
+    worker = _worker(tmp_path)
+    monkeypatch.setattr("kumo.engine.cluster.download_workers", lambda: 1)
+    download = Mock(side_effect=[OSError("download failed"), None])
+    monkeypatch.setattr(worker, "_download", download)
+    relocation = Mock()
+    monkeypatch.setattr("kumo.engine.cluster.relocate_artifacts", relocation)
+    worker.begin("publication", kumo.MLOps(str(tmp_path / "store")))
+    entries = tuple(ArtifactFile(f"file-{index}", 0, "") for index in range(2))
+    for entry in entries:
+        worker.receive("publication", "graph", "objects", entry)
+    futures = [future for _, future in worker._downloads["publication"].files.values()]
+    with pytest.raises(OSError, match="download failed"):
+        worker.commit("publication", "graph", ArtifactBundle("/producer", entries))
+    assert all(future.done() for future in futures)
+    relocation.assert_not_called()
+    assert not worker._downloads
+
+
+def test_abort_cancels_queued_downloads_and_waits_for_active_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Aborting a publication leaves no queued or active work behind."""
+    worker = _worker(tmp_path)
+    monkeypatch.setattr("kumo.engine.cluster.download_workers", lambda: 1)
+    started, release, cancelled = Event(), Event(), Event()
+
+    def download(
+        settings: kumo.MLOps, directory: str, entry: ArtifactFile, root: Path
+    ) -> None:
+        started.set()
+        if not release.wait(timeout=10):
+            raise TimeoutError("Test did not release the active download")
+
+    def observe_cancellation(future: Future[None]) -> None:
+        if future.cancelled():
+            cancelled.set()
+
+    transfer = Mock(side_effect=download)
+    monkeypatch.setattr(worker, "_download", transfer)
+    worker.begin("publication", kumo.MLOps(str(tmp_path / "store")))
+    entries = tuple(ArtifactFile(f"file-{index}", 0, "") for index in range(2))
+    try:
+        worker.receive("publication", "graph", "objects", entries[0])
+        assert started.wait(timeout=10)
+        worker.receive("publication", "graph", "objects", entries[1])
+        futures = [
+            future for _, future in worker._downloads["publication"].files.values()
+        ]
+        futures[1].add_done_callback(observe_cancellation)
+        with ThreadPoolExecutor(max_workers=1) as cleanup:
+            stopped = cleanup.submit(worker.abort, "publication")
+            try:
+                assert cancelled.wait(timeout=10)
+                assert not stopped.done()
+                assert not futures[0].done()
+            finally:
+                release.set()
+            stopped.result(timeout=10)
+        assert all(future.done() for future in futures)
+        transfer.assert_called_once()
+        assert not worker._downloads
+        worker.abort("publication")
+    finally:
+        release.set()
+        worker.abort("publication")
+
+
+def test_replication_cleanup_preserves_the_original_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed abort is logged while the original publication error propagates."""
+    import ray
+    from ray.exceptions import RayError
+
+    peer = SimpleNamespace(begin=Mock(), abort=Mock())
+    monkeypatch.setattr(
+        ray, "get", Mock(side_effect=[None, RayError("cleanup failed")])
+    )
+    with (
+        pytest.raises(ValueError, match="publication failed"),
+        _Replicator([peer], "", "publication", Mock()),
+    ):
+        raise ValueError("publication failed")
+    peer.abort.remote.assert_called_once_with("publication")
+    assert "Could not abort replica downloads" in caplog.text
+
+
+def test_duplicate_publications_and_files_are_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duplicate notifications cannot replace a pool or race writes to one file."""
+    worker = _worker(tmp_path)
+    monkeypatch.setattr(worker, "_download", Mock())
+    settings = kumo.MLOps(str(tmp_path / "store"))
+    worker.begin("publication", settings)
+    try:
+        with pytest.raises(RuntimeError, match="already open"):
+            worker.begin("publication", settings)
+        entry = ArtifactFile("file", 0, "")
+        worker.receive("publication", "graph", "objects", entry)
+        with pytest.raises(ValueError, match="already scheduled"):
+            worker.receive("publication", "graph", "objects", entry)
+    finally:
+        worker.abort("publication")
+
+
+def test_async_download_failure_prevents_durable_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queued download failure aborts the producer's final manifest publication."""
+    import ray
+
+    from kumo.engine._training_table_io import store_prepared
+
+    replica = _worker(tmp_path)
+    monkeypatch.setattr(
+        replica, "_download", Mock(side_effect=OSError("download failed"))
+    )
+    peer = SimpleNamespace(
+        begin=SimpleNamespace(remote=replica.begin),
+        receive=SimpleNamespace(remote=replica.receive),
+        commit=SimpleNamespace(remote=replica.commit),
+        abort=SimpleNamespace(remote=replica.abort),
+    )
+    monkeypatch.setattr(ray, "get", lambda value: value)
+    source = tmp_path / "task"
+    source.mkdir()
+    (source / "data.bin").write_bytes(b"data")
+    settings = kumo.MLOps(str(tmp_path / "store"))
+    with (
+        pytest.raises(OSError, match="download failed"),
+        _Replicator([peer], "", "publication", settings) as transfer,
+    ):
+        store_prepared(
+            tmp_path,
+            (source,),
+            settings,
+            transfer.uploaded,
+            lambda: transfer.finish(tmp_path),
+        )
+    assert not list((tmp_path / "store").rglob("manifest.json"))
+    assert not replica._downloads
+
+
+def test_replication_scope_aborts_an_unfinished_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Leaving a replication scope before finish releases its peer download pools."""
+    import ray
+
+    peer = SimpleNamespace(begin=Mock(), abort=Mock())
+    monkeypatch.setattr(ray, "get", lambda value: value)
+    with _Replicator([peer], "", "publication", Mock()) as transfer:
+        assert transfer.publication == "publication"
+    peer.abort.remote.assert_called_once_with("publication")

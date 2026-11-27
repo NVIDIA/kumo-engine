@@ -3,11 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Relational deep learning with optional remote artifact preparation.
 
-Use ``init`` to configure scratch space and a ComputeCluster. Without a cluster,
-execution stays local. Connectors carry their own source and storage identities.
+Use ``kumo.settings.configure`` for scratch space and compute placement.
+Without a cluster, execution stays local. Connectors carry their own source and storage identities.
 """
 
 import sys
+
+from kumo.settings import ArtifactRoot, ComputeClusterConfig
 
 from kumo_core.embedding_models import (
     EmbeddingModelStore,
@@ -38,9 +40,7 @@ from kumo.engine._monitoring import DriftReport, EvaluationResult
 from kumo.engine._version import __version__
 from kumo.engine.cluster import (
     ArtifactReplica,
-    ArtifactRoot,
     ComputeCluster,
-    ComputeClusterConfig,
     PreparedTrainingArtifacts,
 )
 from kumo.engine.config import configure, init

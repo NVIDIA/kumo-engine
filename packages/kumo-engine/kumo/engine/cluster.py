@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import random
 import threading
-from dataclasses import dataclass, replace
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import ExitStack
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import TracebackType
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -24,73 +26,25 @@ from kumo_core.diskgraph.sampling_artifacts import (
     relocate_artifacts,
 )
 from kumo_core.model_plan import ModelPlan
+from kumo_core.sources.cpu import download_workers
 from kumo_core.training.workflow import MaterializedTrainingTask
 from kumoapi.model_plan import TrainingTableGenerationPlan
 
 from kumo.engine._manifest import (
+    SnapshotManifest,
     SourceTableEntry,
     TrainingTableManifest,
+    TrainingTableParents,
+    embedded,
     read_manifest,
     write_manifest,
 )
 from kumo.engine._mlops import MLOps
-from kumo.engine.connector.base import Connector
 from kumo.engine.graph import Graph, GraphSnapshot, _SnapshotSources
 from kumo.engine.pquery import PredictiveQuery, TrainingTable
+from kumo.settings import ArtifactRoot, ComputeClusterConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class ArtifactRoot:
-    """Durable cluster storage, with authentication supplied by a connector.
-
-    Args:
-        location: Local/shared path or object-store URI; connector-relative when
-            a connector is supplied.
-        connector: Optional file/object-store connector, including its identity.
-    """
-
-    location: str
-    connector: Connector | None = None
-
-    def _settings(self) -> MLOps:
-        root = (
-            self.location if self.connector is None else (self.connector, self.location)
-        )
-        return MLOps(root, store={"snapshot", "training_table"}, on_error="raise")
-
-
-@dataclass(frozen=True)
-class ComputeClusterConfig:
-    """Placement for disk-equipped Ray workers initialized by ``kumo.init``.
-
-    Args:
-        num_workers: Distinct remote nodes to select; None selects all eligible nodes.
-        worker_root: Persistent worker-local directory reused across sessions.
-        resources: Custom Ray resources required by each worker.
-        cpus_per_worker: Reserved CPUs; None reserves each node's full capacity.
-
-    Raises:
-        ValueError: If worker count, CPU capacity or worker_root is invalid.
-    """
-
-    num_workers: int | None = None
-    worker_root: str = "/tmp/kumo-compute"
-    resources: dict[str, float] | None = None
-    cpus_per_worker: float | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            self.num_workers is not None
-            and (type(self.num_workers) is not int or self.num_workers < 1)
-        ) or (
-            self.cpus_per_worker is not None
-            and (not math.isfinite(self.cpus_per_worker) or self.cpus_per_worker <= 0)
-        ):
-            raise ValueError("Worker count and CPUs per worker must be positive")
-        if not Path(self.worker_root).is_absolute() or "://" in self.worker_root:
-            raise ValueError("worker_root must be an absolute worker-local directory")
 
 
 @dataclass(frozen=True)
@@ -145,6 +99,31 @@ class _TrainingTablePublication:
     manifest: TrainingTableManifest | None
 
 
+def _refresh_training_table_lineage(
+    manifest: TrainingTableManifest, snapshot: GraphSnapshot
+) -> TrainingTableManifest:
+    """Embed current snapshot provenance while preserving the table's build metadata.
+
+    Args:
+        manifest: Previously recorded or restored training-table provenance.
+        snapshot: Current snapshot and its source-recording policy.
+    Returns:
+        Updated table provenance; missing snapshot metadata becomes a minimal stub.
+    """
+    parent = snapshot.manifest
+    if parent is None:
+        parent = SnapshotManifest(
+            id=snapshot.id, reconstructed=True, record_sources=snapshot.record_sources
+        )
+    parent = embedded(parent)
+    parents = (
+        TrainingTableParents(snapshot=parent)
+        if manifest.parents is None
+        else replace(manifest.parents, snapshot=parent)
+    )
+    return replace(manifest, parents=parents)
+
+
 def _relocate_tree(source: Path, destination: Path, replacement: Path) -> None:
     """Rebase copied metadata while retaining its binary artifact files."""
     bundle = ArtifactBundle(
@@ -191,7 +170,28 @@ class _Replicator:
         self.publication = publication
         self.pending: list[Any] = []
         self.files: list[ArtifactFile] = []
+        self._finished = False
         self.ray.get([peer.begin.remote(publication, settings) for peer in peers])
+
+    def __enter__(self) -> _Replicator:
+        """Keep replica publications open while uploads are in progress."""
+        return self
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Abort unfinished downloads without masking a publication error."""
+        from ray.exceptions import RayError
+
+        if self._finished:
+            return
+        try:
+            self.ray.get([peer.abort.remote(self.publication) for peer in self.peers])
+        except RayError as error:
+            logger.error("Could not abort replica downloads (%s)", type(error).__name__)
 
     def uploaded(self, directory: str, entry: ArtifactFile) -> None:
         """Queue replica downloads after upload close, without waiting for them."""
@@ -208,7 +208,7 @@ class _Replicator:
         self.ray.get(self.pending)
         self.pending.clear()
         bundle = ArtifactBundle(str(source), tuple(self.files))
-        return tuple(
+        replicas = tuple(
             self.ray.get(
                 [
                     peer.commit.remote(self.publication, self.destination, bundle)
@@ -216,6 +216,17 @@ class _Replicator:
                 ]
             )
         )
+        self._finished = True
+        return replicas
+
+
+@dataclass
+class _ReplicaDownloads:
+    """Worker-owned download pool and file futures for one publication."""
+
+    settings: MLOps
+    pool: ThreadPoolExecutor
+    files: dict[str, tuple[ArtifactFile, Future[None]]] = field(default_factory=dict)
 
 
 class _ComputeWorker:
@@ -230,8 +241,7 @@ class _ComputeWorker:
         configure(scratch_dir=self.root)
         self.snapshots: dict[str, GraphSnapshot] = {}
         self.tables: dict[str, TrainingTable] = {}
-        self.received: dict[str, dict[str, ArtifactFile]] = {}
-        self._stores: dict[str, MLOps] = {}
+        self._downloads: dict[str, _ReplicaDownloads] = {}
         self._staged: dict[str, tuple[Path, _SnapshotSources]] = {}
 
     def identity(self) -> tuple[str, str]:
@@ -239,8 +249,23 @@ class _ComputeWorker:
         return self.node_id, str(self.root)
 
     def begin(self, publication: str, settings: MLOps) -> None:
-        """Bind storage settings to this publication before receiving its files."""
-        self._stores[publication] = settings
+        """Open a bounded worker-local download pool for this publication.
+
+        Args:
+            publication: Unique publication identifier.
+            settings: Authenticated storage used by its downloads.
+        Raises:
+            RuntimeError: If the publication is already open.
+        """
+        if publication in self._downloads:
+            raise RuntimeError("Replica publication is already open")
+        self._downloads[publication] = _ReplicaDownloads(
+            settings,
+            ThreadPoolExecutor(
+                max_workers=download_workers(),
+                thread_name_prefix="kumo-artifact-download",
+            ),
+        )
 
     def receive(
         self,
@@ -249,9 +274,17 @@ class _ComputeWorker:
         directory: str,
         entry: ArtifactFile,
     ) -> None:
-        """Verify a downloaded object before installing it in an unpublished root."""
-        from kumo.engine.connector import file_store
+        """Queue verification and download without blocking the actor on file I/O.
 
+        Args:
+            publication: Open publication receiving the file.
+            destination: Relative worker-local directory, or empty for its root.
+            directory: Producer-resolved remote directory containing the file.
+            entry: Expected file name, size, and digest.
+        Raises:
+            ValueError: If a path is unsafe or a file was already scheduled.
+            KeyError: If the publication is not open.
+        """
         base = (
             self.root / relative_artifact_path(destination)
             if destination
@@ -260,33 +293,74 @@ class _ComputeWorker:
         relative_artifact_path(entry.name)
         if not base.resolve().is_relative_to(self.root.resolve()):
             raise ValueError("Artifact destination escapes worker scratch")
-        settings = self._stores[publication]
+        downloads = self._downloads[publication]
+        if entry.name in downloads.files:
+            raise ValueError("Artifact file was already scheduled for this publication")
+        future = downloads.pool.submit(
+            self._download, downloads.settings, directory, entry, base
+        )
+        downloads.files[entry.name] = (entry, future)
+
+    def _download(
+        self, settings: MLOps, directory: str, entry: ArtifactFile, root: Path
+    ) -> None:
+        """Resolve authentication and stream one verified file on a pool thread."""
+        from kumo.engine.connector import file_store
+
         # Connectors require a nonempty relative path to resolve the filesystem;
         # directory already holds the producer-resolved download location.
         filesystem, _ = file_store(
             settings.root.connector, settings.root.location(entry.name)
         )
-        download_artifact(filesystem, directory, entry, base)
-        self.received.setdefault(publication, {})[entry.name] = entry
+        download_artifact(filesystem, directory, entry, root)
 
     def commit(
         self, publication: str, destination: str, bundle: ArtifactBundle
     ) -> ArtifactReplica:
-        """Expose a replica only after all expected files have arrived."""
-        from kumo_core.diskgraph.sampling_artifacts import relocate_artifacts
+        """Wait for every verified download before exposing relocated artifacts.
 
+        Args:
+            publication: Open publication to commit.
+            destination: Relative worker-local directory, or empty for its root.
+            bundle: Complete file inventory and producer root for relocation.
+        Returns:
+            Metadata identifying the ready replica.
+        Raises:
+            RuntimeError: If the scheduled inventory is incomplete.
+            KeyError: If the publication is not open.
+            ValueError: If verification or metadata relocation fails.
+            OSError: If a download or metadata update fails.
+        """
         inventory = {entry.name: entry for entry in bundle.files}
-        if self.received.get(publication, {}) != inventory:
+        downloads = self._downloads[publication]
+        if {name: entry for name, (entry, _) in downloads.files.items()} != inventory:
             raise RuntimeError("Replica has an incomplete publication inventory")
-        root = (
-            self.root / relative_artifact_path(destination)
-            if destination
-            else self.root
-        )
-        relocate_artifacts(bundle, root, destination_root=self.root)
-        self.received.pop(publication, None)
-        self._stores.pop(publication)
+        try:
+            with ExitStack() as cleanup:
+                cleanup.callback(
+                    downloads.pool.shutdown, wait=True, cancel_futures=True
+                )
+                for _, future in downloads.files.values():
+                    future.result()
+            root = (
+                self.root / relative_artifact_path(destination)
+                if destination
+                else self.root
+            )
+            relocate_artifacts(bundle, root, destination_root=self.root)
+        finally:
+            self._downloads.pop(publication)
         return ArtifactReplica(self.node_id, str(self.root), publication)
+
+    def abort(self, publication: str) -> None:
+        """Cancel queued work and drain active downloads without publishing files.
+
+        Args:
+            publication: Publication to discard; an already closed one is ignored.
+        """
+        downloads = self._downloads.pop(publication, None)
+        if downloads is not None:
+            downloads.pool.shutdown(wait=True, cancel_futures=True)
 
     def stage_snapshot(
         self,
@@ -513,6 +587,11 @@ class _ComputeWorker:
                 "Ignoring incomplete training table %s: %s", original.id, error
             )
             return None
+        refreshed = _refresh_training_table_lineage(
+            manifest, self.snapshots[publication.snapshot_id]
+        )
+        if refreshed != manifest:
+            write_manifest(staging / PROVENANCE_FILE, refreshed)
         assert table.id is not None
         self.tables[table.id] = table
         return table
@@ -648,7 +727,10 @@ class _ComputeWorker:
         )
         manifest = publication.manifest or restored.manifest
         if manifest is not None:
-            write_manifest(target / PROVENANCE_FILE, replace(manifest, id=original.id))
+            refreshed = _refresh_training_table_lineage(
+                replace(manifest, id=original.id), snapshot
+            )
+            write_manifest(target / PROVENANCE_FILE, refreshed)
         self.tables[original.id] = restored
         return restored
 
@@ -693,20 +775,20 @@ class _ComputeWorker:
             table.required_stages,
         )
         publication = uuid4().hex
-        transfer = _Replicator(peers, "", publication, settings)
-        replicas: tuple[ArtifactReplica, ...] = ()
+        with _Replicator(peers, "", publication, settings) as transfer:
+            replicas: tuple[ArtifactReplica, ...] = ()
 
-        def finish() -> None:
-            nonlocal replicas
-            replicas = transfer.finish(self.root)
+            def finish() -> None:
+                nonlocal replicas
+                replicas = transfer.finish(self.root)
 
-        store_prepared(
-            self.root,
-            (Path(materialized.train_table_extension_path), output),
-            settings,
-            transfer.uploaded,
-            finish,
-        )
+            store_prepared(
+                self.root,
+                (Path(materialized.train_table_extension_path), output),
+                settings,
+                transfer.uploaded,
+                finish,
+            )
         replicas = (
             ArtifactReplica(self.node_id, str(self.root), publication),
             *replicas,
@@ -717,7 +799,7 @@ class _ComputeWorker:
 
 
 class ComputeCluster:
-    """Remote worker pool owned by ``kumo.init``.
+    """Remote worker pool selected by ``kumo.settings.configure``.
 
     Args:
         config: Worker placement and persistent local disk configuration.
@@ -728,7 +810,14 @@ class ComputeCluster:
         self, config: ComputeClusterConfig, artifact_root: ArtifactRoot
     ) -> None:
         self.config = config
-        self._settings = artifact_root._settings()
+        root = (
+            artifact_root.location
+            if artifact_root.connector is None
+            else (artifact_root.connector, artifact_root.location)
+        )
+        self._settings = MLOps(
+            root, store={"snapshot", "training_table"}, on_error="raise"
+        )
         self._actors: list[Any] = []
         self._active = False
         self._snapshots: dict[str, Any] = {}
@@ -751,7 +840,9 @@ class ComputeCluster:
         if self._active:
             raise RuntimeError("ComputeCluster is already active")
         if not ray.is_initialized():
-            raise RuntimeError("Initialize Ray before kumo.init(cluster_config=...)")
+            raise RuntimeError(
+                "Initialize Ray before kumo.settings.configure(cluster_config=...)"
+            )
         driver = ray.get_runtime_context().get_node_id()
         nodes = [
             node

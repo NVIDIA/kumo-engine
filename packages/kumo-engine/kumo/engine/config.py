@@ -1,64 +1,85 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Process-wide scratch and compute configuration via ``init``.
+"""Compatibility entry points and Engine's live compute-pool lifecycle."""
 
-``configure`` remains available for shared ``kumo.settings`` scratch configuration.
-"""
-
-from pathlib import Path
+import os
 
 import kumo.settings
-from kumo.engine.cluster import (
-    ArtifactRoot,
-    ComputeCluster,
-    ComputeClusterConfig,
-)
-from kumo.engine.connector.base import Connector
+from kumo.engine.cluster import ComputeCluster
+from kumo.settings import ArtifactRoot, ComputeClusterConfig, _Unchanged
 
 _cluster: ComputeCluster | None = None
 
 
-def init(
+def configure(
     *,
-    scratch_dir: str | Path | None = None,
-    cluster_config: ComputeClusterConfig | None = None,
-    artifact_root: ArtifactRoot | str | tuple[Connector, str] | None = None,
+    scratch_dir: str | os.PathLike[str] | None = None,
+    cluster_config: ComputeClusterConfig | None | _Unchanged = _Unchanged.CLUSTER,
+    artifact_root: ArtifactRoot | str | tuple[object, str] | None = None,
 ) -> None:
-    """Configure scratch space and the process-wide compute cluster.
-
-    Call before creating snapshots or trainers. Reinitializing releases the old
-    workers and invalidates their remote handles, preserving cached files and Ray.
-    Omitting cluster_config selects local execution. Scratch overrides remain
-    applied if worker startup fails.
+    """Forward configuration to ``kumo.settings.configure``.
 
     Args:
-        scratch_dir: Local driver scratch path; None keeps the current path.
-        cluster_config: Remote worker placement, or None for local execution.
-        artifact_root: Durable storage shared by workers. Accepts an ArtifactRoot,
-            a URI/path, or a (connector, path) pair with connector authentication.
-            Required for remote execution; independent of MLOps configuration.
+        scratch_dir: Local working directory; None keeps the current setting.
+        cluster_config: Worker placement. Omit to preserve the pool; None closes it.
+        artifact_root: Shared storage as an ArtifactRoot, URI/path, or
+            (connector, path) pair; required when selecting a cluster.
+
+    Returns:
+        None.
 
     Raises:
-        ValueError: If scratch_dir is remote or cluster/artifact settings conflict.
+        ValueError: If scratch is remote or cluster/storage settings conflict.
+        TypeError: If compute settings have unsupported types.
         RuntimeError: If Ray is uninitialized or worker placement fails.
-        PermissionError: If the artifact root is not writable.
+        PermissionError: If shared storage is not writable.
     """
-    if cluster_config is not None and artifact_root is None:
-        raise ValueError("ComputeCluster requires artifact_root in kumo.init")
-    if cluster_config is None and artifact_root is not None:
-        raise ValueError("artifact_root requires cluster_config")
-    if isinstance(artifact_root, str):
-        artifact_root = ArtifactRoot(artifact_root)
-    elif isinstance(artifact_root, tuple):
-        connector, location = artifact_root
-        artifact_root = ArtifactRoot(location, connector)
+    kumo.settings.configure(
+        scratch_dir=scratch_dir,
+        cluster_config=cluster_config,
+        artifact_root=artifact_root,
+    )
+
+
+def init(
+    *,
+    scratch_dir: str | os.PathLike[str] | None = None,
+    cluster_config: ComputeClusterConfig | None = None,
+    artifact_root: ArtifactRoot | str | tuple[object, str] | None = None,
+) -> None:
+    """Forward initialization to settings, selecting local execution by default.
+
+    Args:
+        scratch_dir: Local working directory; None keeps the current setting.
+        cluster_config: Worker placement, or None to release the current pool.
+        artifact_root: Shared storage; required when selecting a cluster.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If scratch is remote or cluster/storage settings conflict.
+        TypeError: If compute settings have unsupported types.
+        RuntimeError: If Ray is uninitialized or worker placement fails.
+        PermissionError: If shared storage is not writable.
+    """
+    configure(
+        scratch_dir=scratch_dir,
+        cluster_config=cluster_config,
+        artifact_root=artifact_root,
+    )
+
+
+def _configure_cluster(
+    cluster_config: ComputeClusterConfig | None, artifact_root: ArtifactRoot | None
+) -> None:
+    """Replace Engine's worker pool after shared settings have been validated."""
     candidate = (
         ComputeCluster(cluster_config, artifact_root)
         if cluster_config is not None and artifact_root is not None
         else None
     )
-    configure(scratch_dir=scratch_dir)
     global _cluster
     if _cluster is not None:
         _cluster.close()
@@ -70,26 +91,3 @@ def init(
 
 def _get_compute_cluster() -> ComputeCluster | None:
     return _cluster
-
-
-def configure(
-    *,
-    scratch_dir: str | Path | None = None,
-) -> None:
-    r"""Sets process-wide configuration for this package. Same as
-    `kumo.settings.configure`.
-
-    Args:
-        scratch_dir: where `Graph.snapshot()`'s DiskGraph ingest and
-            `Trainer.fit`/`predict`'s training/prediction runs read and
-            write their working data -- e.g. a local NVMe SSD mount, for
-            faster ingest/training than the default `~/.cache/kumo-engine`
-            (typically the boot disk). Must be a local filesystem path --
-            DiskGraph and GNN training read and write it directly, so a
-            remote URI (an `s3://`/`gs://` path, a Snowflake stage) isn't
-            accepted here. `None` leaves the current setting unchanged.
-
-    Raises:
-        ValueError: if `scratch_dir` isn't a local filesystem path.
-    """
-    kumo.settings.configure(scratch_dir=scratch_dir)

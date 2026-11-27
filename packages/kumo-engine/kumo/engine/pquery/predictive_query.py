@@ -289,7 +289,7 @@ class PredictiveQuery:
             if mlops is not None:
                 raise ValueError(
                     'Configure cluster storage through '
-                    'kumo.init(artifact_root=...)')
+                    'kumo.settings.configure(artifact_root=...)')
             return snapshot._compute._training_table_generate(self, snapshot, plan)
         options = self._generation_options(plan)
 

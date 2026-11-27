@@ -836,7 +836,7 @@ class Graph:
         `"nanoseconds"`, `"microseconds"`, `"milliseconds"`, `"seconds"` (the
         default), `"hours"` or `"days"`. Window lengths truncate to the clock,
         and a window shorter than one tick is a configuration error. Each
-        clock is cached as a separate snapshot. When configured by `kumo.init`,
+        clock is cached as a separate snapshot. When configured by `kumo.settings.configure`,
         the ComputeCluster builds or reuses this index on remote workers.
 
         Args:
@@ -852,7 +852,7 @@ class Graph:
             if mlops is not None:
                 raise ValueError(
                     'Configure cluster storage through '
-                    'kumo.init(artifact_root=...)')
+                    'kumo.settings.configure(artifact_root=...)')
             if callbacks:
                 raise ValueError('Remote snapshot callbacks are not supported')
             return cluster._graph_snapshot(self, {

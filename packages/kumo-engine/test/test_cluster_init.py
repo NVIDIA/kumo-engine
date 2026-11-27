@@ -10,13 +10,15 @@ from unittest.mock import Mock
 import pytest
 
 import kumo.engine as kumo
+import kumo.settings as settings
 from kumo.engine import config
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.cluster import _ComputeWorker
 from kumo.engine.graph import GraphSnapshot, _SnapshotSources
+from kumo.settings import ComputeClusterConfig
 
 
-def test_init_and_return_to_local(
+def test_shared_settings_configure_and_return_to_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Reinitializing closes the pool while retaining configure compatibility."""
@@ -25,8 +27,10 @@ def test_init_and_return_to_local(
     monkeypatch.setattr(config, "_cluster", None)
     previous = get_scratch_dir()
     try:
-        placement = kumo.ComputeClusterConfig()
-        kumo.init(
+        placement = ComputeClusterConfig()
+        assert kumo.ComputeClusterConfig is ComputeClusterConfig
+        assert kumo.ArtifactRoot is settings.ArtifactRoot
+        settings.configure(
             scratch_dir=tmp_path,
             cluster_config=placement,
             artifact_root=str(tmp_path / "store"),
@@ -37,7 +41,7 @@ def test_init_and_return_to_local(
         factory.return_value.start.assert_called_once_with()
         assert get_scratch_dir() == tmp_path
         assert config._get_compute_cluster() is factory.return_value
-        kumo.init()
+        settings.configure(cluster_config=None)
         factory.return_value.close.assert_called_once_with()
         assert config._get_compute_cluster() is None
         kumo.configure(scratch_dir=tmp_path / "other")
@@ -86,14 +90,14 @@ def test_init_rejects_invalid_configuration(
     previous.close.assert_not_called()
 
 
-def test_init_connector_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shared_settings_forward_connector_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Authenticated connectors are forwarded without introducing credential fields."""
     factory = Mock()
     monkeypatch.setattr(config, "ComputeCluster", factory)
     monkeypatch.setattr(config, "_cluster", None)
     connector = kumo.FileConnector(root_dir=str(tmp_path))
     placement = kumo.ComputeClusterConfig()
-    kumo.init(cluster_config=placement, artifact_root=(connector, "artifacts"))
+    settings.configure(cluster_config=placement, artifact_root=(connector, "artifacts"))
     factory.assert_called_once_with(
         placement, kumo.ArtifactRoot("artifacts", connector)
     )
@@ -270,9 +274,9 @@ def test_remote_operations_use_initialized_storage(
         trainer.prepare_artifacts(table, snapshot=snapshot)
     cluster._training_table_generate.assert_called_once_with(query, snapshot, None)
     assert len(cluster.prepare_training.call_args.args) == 3
-    with pytest.raises(ValueError, match="kumo.init"):
+    with pytest.raises(ValueError, match="kumo.settings.configure"):
         query.generate_training_table(snapshot, mlops=settings)
-    with pytest.raises(ValueError, match="kumo.init"):
+    with pytest.raises(ValueError, match="kumo.settings.configure"):
         trainer.fit(table, snapshot=snapshot, mlops=settings)
 
 
@@ -344,3 +348,40 @@ def test_worker_restart_preserves_disk_cache(
     assert first.node_id != second.node_id
     assert marker.read_bytes() == b"persisted"
     scratch.assert_called_with(scratch_dir=second.root)
+
+
+def test_engine_configure_delegates_to_shared_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compatibility entry point forwards both scratch and compute arguments."""
+    configure = Mock()
+    monkeypatch.setattr(settings, "configure", configure)
+    placement = settings.ComputeClusterConfig()
+    root = settings.ArtifactRoot("artifacts")
+    kumo.configure(scratch_dir=tmp_path, cluster_config=placement, artifact_root=root)
+    configure.assert_called_once_with(
+        scratch_dir=tmp_path, cluster_config=placement, artifact_root=root
+    )
+
+
+def test_init_keeps_its_local_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The old init() call explicitly releases workers through shared settings."""
+    configure = Mock()
+    monkeypatch.setattr(settings, "configure", configure)
+    kumo.init()
+    configure.assert_called_once_with(
+        scratch_dir=None, cluster_config=None, artifact_root=None
+    )
+
+
+def test_scratch_only_configure_keeps_an_existing_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compatibility scratch updates do not tear down remote workers."""
+    pool = Mock()
+    monkeypatch.setattr(config, "_cluster", pool)
+    monkeypatch.setattr(settings, "_configured", None)
+    kumo.configure(scratch_dir=tmp_path)
+    pool.close.assert_not_called()
+    assert config._get_compute_cluster() is pool
+    assert settings.scratch_dir() == tmp_path

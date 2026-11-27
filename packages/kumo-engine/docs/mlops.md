@@ -6,23 +6,24 @@ Install the engine wheel by path, `pip install "<wheel dir>/<kumo_engine wheel>[
 
 ## Remote artifact preparation
 
-Configure remote artifact preparation once with `kumo.init`. Install the wheel's
+Configure remote artifact preparation with `kumo.settings.configure`. Install the wheel's
 `compute` extra and matching engine, DiskGraph and connector dependencies on every
 node. Initialize Ray first; Kumo does not provision machines or shut down Ray.
 
 ```python
 import ray
 import kumo.engine as kumo
+import kumo.settings as settings
 from kumoapi.model_plan import ModelPlan
 
 ray.init(address="auto")
-kumo.init(
+settings.configure(
     scratch_dir="/shared/kumo-driver",
-    cluster_config=kumo.ComputeClusterConfig(
+    cluster_config=settings.ComputeClusterConfig(
         worker_root="/local_nvme/kumo",
         resources={"artifact_worker": 1},
     ),
-    artifact_root=kumo.ArtifactRoot(location="s3://<bucket>/artifacts"),
+    artifact_root=settings.ArtifactRoot(location="s3://<bucket>/artifacts"),
 )
 snapshot = graph.snapshot()
 table = pquery.generate_training_table(snapshot)
@@ -30,13 +31,20 @@ trainer = kumo.Trainer(ModelPlan())
 prepared = trainer.prepare_artifacts(table, snapshot=snapshot)
 
 # Release the pool and return future snapshots to local execution.
-kumo.init()
+settings.configure(cluster_config=None)
 ```
 
-`cluster_config=None` (the default) selects local execution. `configure` still
-configures scratch space as before. Reinitializing closes the old pool and
-invalidates its remote handles, preserving cached files. There is no cluster
-context manager or per-call `cluster` argument.
+Omitting `cluster_config` preserves the current pool, so scratch-only updates
+keep workers running. Pass `cluster_config=None` to release the pool and select
+local execution. Reconfiguration closes the old pool and invalidates its remote
+handles, preserving cached files. There is no cluster context manager or per-call
+`cluster` argument.
+
+`ComputeClusterConfig` and `ArtifactRoot` live in `kumo.settings` and remain
+re-exported by Engine. Scratch-only settings stay lightweight; compute setup
+lazily loads Engine's pool implementation. `kumo.engine.configure` delegates to
+shared settings for compatibility. The older `kumo.engine.init` also delegates,
+with its existing default of returning to local execution.
 
 Cluster storage is independent of MLOps configuration. `artifact_root` accepts an
 `ArtifactRoot`, URI/path, or `(connector, path)` pair. For explicit authentication,
@@ -79,14 +87,20 @@ ingested fit artifacts instead of generated Parquet. The owner downloads the
 Parquet files unchanged and passes their local paths to native custom-table
 materialization, bypassing connector staging and its dtype conversions. The
 descriptor retains the original query, effective settings, required stages and
-provenance. There is no separate request-key index or native staging-bundle publication.
+provenance. Reused and restored tables refresh their embedded snapshot lineage
+for the current `record_sources` policy without changing row files or table IDs.
+There is no separate request-key index or native staging-bundle publication.
 
 Training-table ingestion runs again for every fit, with a fresh extension ID,
 matching the existing local training path. The producer publishes that fit's
 extension and task metadata through the existing transfer machinery: uploaded
 files queue verified peer downloads followed by a complete-inventory barrier.
-Binary files remain unchanged and worker-specific JSON paths are rebased.
-Transfer failure prevents further work on the pool.
+Each peer uses a thread pool with the existing CPU-aware download limit, capped
+at 32 threads. Receive calls acknowledge scheduling without waiting for I/O;
+commit waits for all files before rebasing worker-specific JSON paths. Binary
+files remain unchanged. Completion closes the download pool; failure cancels
+queued files and drains active transfers before abandoning the publication.
+Transfer failure prevents further work on the compute pool.
 
 Local fits and worker preparation share plan validation, feature inference,
 ingestion, task materialization and test-split checks. Local fits also validate

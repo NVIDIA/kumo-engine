@@ -9,7 +9,8 @@ Where a claim is not verified against the shipped package it is flagged. Do not 
 Import convention: `import kumo.engine as kumo`.
 
 There is no `KumoFineTuning`, `kumo.NodeType`, or `kumo.EdgeType` class. Do not emit them.
-Local `kumo.init(scratch_dir=...)` configures scratch and optional compute workers.
+`kumo.settings.configure(...)` configures scratch and optional compute workers;
+`kumo.engine.configure(...)` remains a compatibility entry point.
 Hosted initialization with URL or API-key arguments is out of scope.
 
 ---
