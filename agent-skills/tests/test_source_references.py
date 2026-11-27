@@ -19,12 +19,13 @@ REPO = Path(__file__).resolve().parents[2]
 SKILLS = REPO / 'agent-skills' / 'skills'
 PACKAGES = {
     'kumo.engine': REPO / 'packages' / 'kumo-engine' / 'kumo' / 'engine',
+    'kumo.settings': REPO / 'packages' / 'kumo-settings' / 'src' / 'kumo' / 'settings.py',
     'kumo_core': REPO / 'packages' / 'kumo-core' / 'src' / 'kumo_core',
     'kumoapi': REPO / 'packages' / 'kumo-api' / 'kumoapi',
     'kumo_snowflake': REPO / 'packages' / 'kumo-snowflake' / 'src' / 'kumo_snowflake',
     'kumo_databricks': REPO / 'packages' / 'kumo-databricks' / 'src' / 'kumo_databricks',
 }
-ROOT = r'(?:kumo\.engine|kumo_core|kumoapi|kumo_snowflake|kumo_databricks)'
+ROOT = r'(?:kumo\.engine|kumo\.settings|kumo_core|kumoapi|kumo_snowflake|kumo_databricks)'
 DOTTED = re.compile(rf'`({ROOT}(?:\.[A-Za-z_][A-Za-z0-9_]*)+)`')
 FENCE = re.compile(r'^[ \t]*```[^\n]*\n(.*?)^[ \t]*```', re.DOTALL | re.MULTILINE)
 FROM_IMPORT = re.compile(rf'^[ \t]*from[ \t]+({ROOT}(?:\.\w+)*)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)', re.MULTILINE)
@@ -34,7 +35,7 @@ ALIAS = re.compile(r'\bkumo\.([A-Za-z_][A-Za-z0-9_]*)')
 # Names the skills say do not exist (superseded or hosted-only) and must never be emitted.
 NOT_EXPORTED = {
     'ComputeType', 'Dtype', 'EdgeType', 'FilesystemArtifactLocation', 'LocalBackend', 'NodeType',
-    'Session', 'Storage', 'Stype', 'create_identity', 'get_backend', 'init', 'set_backend',
+    'Session', 'Storage', 'Stype', 'create_identity', 'get_backend', 'set_backend',
     'test_identity_credentials',
 }
 
@@ -199,7 +200,7 @@ def test_cited_module_exists(dotted: str) -> None:
 
 
 def test_kumo_names_match_the_public_api() -> None:
-    used = set(ALIAS.findall(skill_text())) - {'engine'}
+    used = set(ALIAS.findall(skill_text())) - {'engine', 'settings'}
     public = exported()
     assert used - public - NOT_EXPORTED == set(), 'kumo.<name> cited but not in kumo.engine.__all__'
     assert NOT_EXPORTED & public == set(), 'a name the skills call nonexistent is now exported'
@@ -210,6 +211,8 @@ def test_resolve_reports_missing_names() -> None:
     assert resolve('kumo_core.train.trainer.Trainer.explain') is None
     assert resolve('kumo_core.train.trainer.Trainer.no_such_method') is not None
     assert resolve('kumo_core.no_such_module') is not None
+    assert resolve('kumo.settings.configure') is None
+    assert resolve('kumo.settings.no_such_setting') is not None
     assert resolve('kumo.engine.Trainer.fit') is None
     assert resolve('kumo.engine.Trainer.no_such_method') is not None
     assert resolve('kumo_core.Train.trainer') is not None  # wrong case must not match `train/`

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Collection, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from numbers import Real
 from typing import Any, Iterable, Mapping
@@ -31,6 +33,37 @@ from kumoapi.typing import ColStatType, Dtype, Stype
 from . import stype_inference
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def no_encoder_inference_warnings(
+    overridden: Collection[str] | None = None,
+) -> Iterator[None]:
+    """Suppress inference warnings for columns with explicit encoder choices.
+
+    Args:
+        overridden: Columns whose inferred encoders will be replaced. None
+            suppresses all inference warnings for operations that do not use them.
+    Yields:
+        None while the temporary encoder-inference log filter is installed.
+    """
+
+    def drop(record: logging.LogRecord) -> bool:
+        if overridden is None:
+            return record.levelno < logging.WARNING
+        return (
+            record.levelno < logging.WARNING
+            or not isinstance(record.args, tuple)
+            or not record.args
+            or record.args[0] not in overridden
+        )
+
+    logger.addFilter(drop)
+    try:
+        yield
+    finally:
+        logger.removeFilter(drop)
+
 
 NA_THRESHOLD = 0.6
 SMALL_NUM_ROWS_THRESHOLD = 100
