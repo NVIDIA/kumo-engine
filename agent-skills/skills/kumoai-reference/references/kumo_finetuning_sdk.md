@@ -217,6 +217,11 @@ exact name, then its upper-cased form, so `connector['ENTITY_PROFILE']` never fi
 table names as `table_names()` returns them and column names as `.columns` returns them — in
 `primary_key=`, `time_column=`, column lists and filters.
 
+**Set `primary_key=` only where the confirmed graph names a primary key.** A table the graph
+lists as `no primary key` is built without `primary_key=`, even when it has a column that looks
+like one (`status_event_id`) or an end time column; adding a key changes the graph the user
+confirmed.
+
 **Never exclude a column by a case-sensitive `!=` against a hand-typed literal.** A filter such as
 `c.name != 'END_DATE'` silently keeps a lower-case `end_date` — the comparison never matches, the
 column is never dropped, and nothing raises. Pass the confirmed `Excluded columns` from preflight
@@ -532,6 +537,9 @@ prediction_table = kumo.PredictionTable.from_source_table(
   contain a target column. The SQL above stages only `ENTITY1`, which suffices for a static query
   on an entity without a timestamp; otherwise also select the anchor time as `TIMESTAMP`.
 - Rows the model trained on are scored too. Say so: those predictions are not out-of-sample.
+- The population table is an input, not a destination. With no confirmed destination
+  (`notebook only`), the notebook stages the population and predicts with no `output_config`;
+  it defines no `OUTPUT_*` names and no output connector.
 
 Source: shipped package (`kumo_core.prediction.generate_prediction_table`,
 `kumo.engine.pquery.prediction_table.PredictionTable.from_source_table`)

@@ -339,7 +339,9 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
      describing the one line to add a destination later. That example is markdown text, never a
      code cell: a notebook with no confirmed destination contains no code that writes. Inside
      the markdown, show the code as text (a `text` fence), never as a `python` code block —
-     one that would run is a code cell that writes.
+     one that would run is a code cell that writes. A confirmed population table is not a
+     destination: staging it is the notebook's only write, and its name never implies an
+     output table.
    The predict call is part of the artifact, not a separate job the agent manages. The agent
    still executes nothing (Step 3 is opt-in).
 

@@ -284,8 +284,7 @@ Assigning time columns:
 - Tables without a meaningful timeline can legitimately have no time column.
 - Rows with a validity interval (the time column is the start, another column the end) declare
   the end column with `end_time_column` on `Table.from_source_table(...)`, next to `time_column`:
-  `from_source_table(connector['T'], [...], primary_key='K', time_column='START_DATE',
-  end_time_column='END_DATE')`. Verified in the SDK source: the column is typed as a timestamp, it
+  `from_source_table(connector['T'], [...], time_column='START_DATE', end_time_column='END_DATE')`. Verified in the SDK source: the column is typed as a timestamp, it
   must be among the table's `columns`, and it is left out of the model's feature columns
   (`kumo_core.encoder_selection.feature_column_names`), so it does not leak. Sampling is
   end-date-aware only on the entity table (after `FOR EACH`) and on the right-hand table of a link
